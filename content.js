@@ -323,6 +323,8 @@
   let countdownTimer = null;    // countdown setInterval id
   let countdownOverlay = null;  // countdown DOM element
   let playerClickHandler = null; // player click handler ref for cleanup
+  let isUpdatingEndCard = false; // guard: prevents observer re-entry during DOM writes
+  let autoplayHandled = false;   // guard: prevents redundant processing after skip initiated
 
   /**
    * Extract video ID from a YouTube URL.
@@ -405,6 +407,8 @@
     );
     if (!container) return;
 
+    isUpdatingEndCard = true;
+
     const titleEl = container.querySelector(".ytp-autonav-endscreen-upnext-title");
     if (titleEl) titleEl.textContent = info.title;
 
@@ -439,6 +443,8 @@
     // Hide live stamp — replacement passed our filter so it's not live
     const liveStamp = container.querySelector(".ytp-autonav-live-stamp");
     if (liveStamp) liveStamp.style.display = "none";
+
+    isUpdatingEndCard = false;
 
     log("Autoplay: updated end card to show:", info.title);
   }
@@ -523,6 +529,7 @@
    * Returns true if a skip was initiated.
    */
   function checkAutoplayAndSkip() {
+    if (autoplayHandled) return false;
     if (!location.pathname.startsWith("/watch")) return false;
 
     const container = document.querySelector(
@@ -596,6 +603,7 @@
     const alternative = findSidebarAlternative();
     if (alternative) {
       log("Autoplay: replacement:", alternative.title);
+      autoplayHandled = true;
       updateEndCard(alternative);
       startCountdown(alternative);
       return true;
@@ -788,6 +796,8 @@
     }
 
     autoplayContainerObserver = new MutationObserver((mutations) => {
+      if (isUpdatingEndCard) return;
+
       for (const mutation of mutations) {
         // Trigger on attribute changes (data-is-live being set, style changes)
         if (
@@ -839,6 +849,7 @@
     stopVideoPolling();
     teardownAutoplayContainerObserver();
     cancelCountdown();
+    autoplayHandled = false;
   }
 
   // ---------------------------------------------------------------------------
