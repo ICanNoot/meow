@@ -84,9 +84,14 @@
       if (txt === "LIVE" || txt === "LIVE NOW") return true;
     }
 
-    // 3. New layout: yt-thumbnail-badge-view-model > badge-shape > .yt-badge-shape__text
+    // 3. New layout (Firefox): yt-badge-view-model, yt-thumbnail-badge-view-model,
+    //    and badge-shape > .yt-badge-shape__text
     const badgeTexts = el.querySelectorAll(
-      "yt-thumbnail-badge-view-model .yt-badge-shape__text, badge-shape .yt-badge-shape__text"
+      [
+        "yt-badge-view-model .yt-badge-shape__text",
+        "yt-thumbnail-badge-view-model .yt-badge-shape__text",
+        "badge-shape .yt-badge-shape__text",
+      ].join(", ")
     );
     for (const bt of badgeTexts) {
       const txt = (bt.textContent || "").trim().toUpperCase();
@@ -116,9 +121,15 @@
    * Returns the parsed number, or NaN if not found.
    */
   function getViewCount(el) {
-    // Strategy 1: aria-label on #video-title or a#video-title-link
-    // These contain the full description like:
-    // "Title by Channel 123,456 views 2 days ago 10 minutes"
+    // Strategy 1: yt-content-metadata-view-model (Firefox / new layout)
+    // Contains spans like "14m views" / "350k views"
+    const metaViewModel = el.querySelector("yt-content-metadata-view-model");
+    if (metaViewModel) {
+      const vs = extractViewString(metaViewModel.textContent);
+      if (vs) return parseViewCount(vs);
+    }
+
+    // Strategy 2: aria-label on #video-title or a#video-title-link (Chrome)
     const titleEl = el.querySelector("#video-title");
     if (titleEl) {
       const label = titleEl.getAttribute("aria-label") || "";
@@ -133,32 +144,24 @@
       if (vs) return parseViewCount(vs);
     }
 
-    // Strategy 2: metadata block text
-    // ytd-video-meta-block is used on homepage and search
+    // Strategy 3: ytd-video-meta-block text (Chrome homepage / search)
     const metaBlock = el.querySelector("ytd-video-meta-block");
     if (metaBlock) {
       const vs = extractViewString(metaBlock.textContent);
       if (vs) return parseViewCount(vs);
     }
 
-    // Strategy 3: #metadata-line (used in compact renderers / sidebar)
+    // Strategy 4: #metadata-line (Chrome compact renderers / sidebar)
     const metaLine = el.querySelector("#metadata-line");
     if (metaLine) {
       const vs = extractViewString(metaLine.textContent);
       if (vs) return parseViewCount(vs);
     }
 
-    // Strategy 4: #metadata (fallback)
+    // Strategy 5: #metadata (Chrome fallback)
     const metadata = el.querySelector("#metadata");
     if (metadata) {
       const vs = extractViewString(metadata.textContent);
-      if (vs) return parseViewCount(vs);
-    }
-
-    // Strategy 5: yt-content-metadata-view-model spans (new homepage layout)
-    const metaViewModel = el.querySelector("yt-content-metadata-view-model");
-    if (metaViewModel) {
-      const vs = extractViewString(metaViewModel.textContent);
       if (vs) return parseViewCount(vs);
     }
 
@@ -223,14 +226,21 @@
       : "(unknown)";
   }
 
-  // Selectors for all video element types we want to filter
+  // Selectors for all video element types we want to filter.
+  // Includes both ytd- (Chrome / legacy) and yt- (Firefox / new layout) elements.
   const VIDEO_SELECTORS = [
-    "ytd-rich-item-renderer",     // Homepage grid items
-    "ytd-video-renderer",         // Search results
-    "ytd-compact-video-renderer", // Sidebar recommendations
-    "ytd-grid-video-renderer",    // Grid views (channel pages, etc.)
-    "ytd-reel-item-renderer",     // Shorts on homepage
+    "ytd-rich-item-renderer",     // Homepage grid items (Chrome)
+    "ytd-video-renderer",         // Search results (Chrome)
+    "ytd-compact-video-renderer", // Sidebar recommendations (Chrome)
+    "ytd-grid-video-renderer",    // Grid views / channel pages (Chrome)
+    "ytd-reel-item-renderer",     // Shorts on homepage (Chrome)
+    "yt-lockup-view-model",       // Video cards (Firefox / new layout)
   ].join(", ");
+
+  // ytd- selectors used to detect whether a yt-lockup-view-model is nested
+  // inside a Chrome-style container (so we skip it and let the parent handle it).
+  const YTD_CONTAINER_SELECTORS =
+    "ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer";
 
   /**
    * Process a single video element: check and hide if necessary.
@@ -240,6 +250,17 @@
   function processVideoElement(el) {
     // Already filtered — skip
     if (el.hasAttribute(FILTERED_ATTR)) return true;
+
+    // On Chrome, yt-lockup-view-model is nested inside a ytd- container.
+    // Skip the inner element — the outer ytd- container will be processed
+    // and hidden instead, which avoids leaving an empty grid slot.
+    if (
+      el.tagName === "YT-LOCKUP-VIEW-MODEL" &&
+      el.closest(YTD_CONTAINER_SELECTORS)
+    ) {
+      el.setAttribute(FILTERED_ATTR, "skip");
+      return true;
+    }
 
     const { hide, reason, indeterminate } = shouldHide(el);
 
@@ -272,7 +293,7 @@
       const status = el.getAttribute(FILTERED_ATTR);
 
       // Already definitively resolved
-      if (status === "1" || status === "pass") continue;
+      if (status === "1" || status === "pass" || status === "skip") continue;
 
       newCount++;
       if (processVideoElement(el)) {
@@ -297,12 +318,16 @@
   function handleAutoplay() {
     if (!location.pathname.startsWith("/watch")) return;
 
-    const secondary = document.querySelector(
-      "ytd-watch-next-secondary-results-renderer"
-    );
+    // Find the sidebar panel — try both Chrome and Firefox containers
+    const secondary =
+      document.querySelector("ytd-watch-next-secondary-results-renderer") ||
+      document.querySelector("#secondary-inner, #related");
     if (!secondary) return;
 
-    const items = secondary.querySelectorAll("ytd-compact-video-renderer");
+    // Query both Chrome (ytd-compact-video-renderer) and Firefox (yt-lockup-view-model) items
+    const items = secondary.querySelectorAll(
+      "ytd-compact-video-renderer, yt-lockup-view-model"
+    );
     if (items.length === 0) return;
 
     const first = items[0];
