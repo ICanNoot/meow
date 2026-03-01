@@ -3,6 +3,12 @@
   "name": "YouTube Feed Filter",
   "version": "1.0.0",
   "description": "Filters out livestreams and low-view-count videos from YouTube's homepage, search results, sidebar recommendations, and autoplay.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "youtube-feed-filter@example.com",
+      "strict_min_version": "109.0"
+    }
+  },
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*"],
