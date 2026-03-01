@@ -325,6 +325,39 @@
   let playerClickHandler = null; // player click handler ref for cleanup
   let isUpdatingEndCard = false; // guard: prevents observer re-entry during DOM writes
   let autoplayHandled = false;   // guard: prevents redundant processing after skip initiated
+  let ytAutoplayWasOn = false;   // tracks if we toggled YouTube's native autoplay off
+
+  /**
+   * Disable YouTube's native autoplay toggle so it doesn't navigate
+   * before our countdown finishes.
+   */
+  function cancelYouTubeAutoplay() {
+    const toggle = document.querySelector(".ytp-autonav-toggle-button");
+    if (!toggle) {
+      log("Autoplay: YouTube autoplay toggle not found");
+      return false;
+    }
+    if (toggle.getAttribute("aria-checked") === "true") {
+      toggle.click();
+      ytAutoplayWasOn = true;
+      log("Autoplay: disabled YouTube native autoplay");
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Re-enable YouTube's native autoplay toggle if we previously disabled it.
+   */
+  function restoreYouTubeAutoplay() {
+    if (!ytAutoplayWasOn) return;
+    const toggle = document.querySelector(".ytp-autonav-toggle-button");
+    if (toggle && toggle.getAttribute("aria-checked") === "false") {
+      toggle.click();
+      log("Autoplay: restored YouTube native autoplay");
+    }
+    ytAutoplayWasOn = false;
+  }
 
   /**
    * Extract video ID from a YouTube URL.
@@ -522,6 +555,7 @@
       if (player) player.removeEventListener("click", playerClickHandler);
       playerClickHandler = null;
     }
+    restoreYouTubeAutoplay();
   }
 
   /**
@@ -603,6 +637,7 @@
     const alternative = findSidebarAlternative();
     if (alternative) {
       log("Autoplay: replacement:", alternative.title);
+      cancelYouTubeAutoplay();
       autoplayHandled = true;
       updateEndCard(alternative);
       startCountdown(alternative);
@@ -674,6 +709,7 @@
    * Prefers .click() for SPA transition, falls back to location change.
    */
   function navigateToVideo(anchor) {
+    restoreYouTubeAutoplay();
     const url = anchor.href;
     try {
       anchor.click();
@@ -850,6 +886,7 @@
     teardownAutoplayContainerObserver();
     cancelCountdown();
     autoplayHandled = false;
+    restoreYouTubeAutoplay();
   }
 
   // ---------------------------------------------------------------------------
