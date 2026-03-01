@@ -6,3 +6,60 @@
 .ytf-hidden {
   display: none !important;
 }
+
+/* Autoplay countdown overlay — positioned inside #movie_player */
+.ytf-countdown-overlay {
+  position: absolute;
+  bottom: 60px;
+  right: 12px;
+  z-index: 1000;
+  pointer-events: auto;
+}
+
+.ytf-countdown-content {
+  background: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-family: "YouTube Noto", Roboto, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  max-width: 260px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.ytf-countdown-text {
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.ytf-countdown-number {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.ytf-countdown-title {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ytf-countdown-cancel {
+  background: transparent;
+  color: #3ea6ff;
+  border: 1px solid #3ea6ff;
+  border-radius: 4px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.ytf-countdown-cancel:hover {
+  background: rgba(62, 166, 255, 0.15);
+}

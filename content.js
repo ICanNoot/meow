@@ -312,14 +312,215 @@
   // Autoplay intervention
   // ---------------------------------------------------------------------------
 
+  const COUNTDOWN_SECONDS = 10;
+  const HISTORY_MAX = 20;
+  const recentVideoIds = new Set(); // persists across SPA navs, resets on full reload
+
   let videoEndedBound = null;   // current bound listener ref
   let videoElement = null;      // current <video> element
   let videoPollingTimer = null; // polling interval for finding <video>
   let autoplayContainerObserver = null; // MutationObserver on up-next container
+  let countdownTimer = null;    // countdown setInterval id
+  let countdownOverlay = null;  // countdown DOM element
+  let playerClickHandler = null; // player click handler ref for cleanup
+
+  /**
+   * Extract video ID from a YouTube URL.
+   */
+  function extractVideoId(url) {
+    try {
+      const u = new URL(url, location.origin);
+      return u.searchParams.get("v") || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Record the current video in the recently-played history.
+   */
+  function recordCurrentVideo() {
+    const id = extractVideoId(location.href);
+    if (id) {
+      recentVideoIds.add(id);
+      if (recentVideoIds.size > HISTORY_MAX) {
+        const oldest = recentVideoIds.values().next().value;
+        recentVideoIds.delete(oldest);
+      }
+      log("Autoplay: recorded video", id, "in history (" + recentVideoIds.size + " total)");
+    }
+  }
+
+  /**
+   * Get the channel name from a sidebar video element.
+   */
+  function getVideoChannel(el) {
+    // Chrome: ytd-channel-name
+    const chromeChannel = el.querySelector(
+      "ytd-channel-name #text, #channel-name #text, ytd-channel-name yt-formatted-string"
+    );
+    if (chromeChannel && chromeChannel.textContent.trim()) {
+      return chromeChannel.textContent.trim();
+    }
+
+    // Firefox: yt-content-metadata-view-model spans
+    // Channel name is typically a span that isn't views/date/watching
+    const metaModel = el.querySelector("yt-content-metadata-view-model");
+    if (metaModel) {
+      const spans = metaModel.querySelectorAll("span");
+      for (const span of spans) {
+        const text = span.textContent.trim();
+        if (
+          text &&
+          !/views?\s*$/i.test(text) &&
+          !/ago\s*$/i.test(text) &&
+          !/watching/i.test(text) &&
+          !/^\d/.test(text)
+        ) {
+          return text;
+        }
+      }
+    }
+
+    return "";
+  }
+
+  /**
+   * Get the metadata text (views + date) from a sidebar video element.
+   */
+  function getVideoMetaText(el) {
+    const metaModel = el.querySelector("yt-content-metadata-view-model");
+    if (metaModel) return metaModel.textContent.trim();
+    const metaLine = el.querySelector("#metadata-line");
+    if (metaLine) return metaLine.textContent.trim();
+    return "";
+  }
+
+  /**
+   * Update the autoplay end card to show the replacement video's info.
+   */
+  function updateEndCard(info) {
+    const container = document.querySelector(
+      ".ytp-autonav-endscreen-upnext-container"
+    );
+    if (!container) return;
+
+    const titleEl = container.querySelector(".ytp-autonav-endscreen-upnext-title");
+    if (titleEl) titleEl.textContent = info.title;
+
+    const authorEl = container.querySelector(".ytp-autonav-endscreen-upnext-author");
+    if (authorEl && info.channel) authorEl.textContent = info.channel;
+
+    const viewDateEl = container.querySelector(".ytp-autonav-view-and-date");
+    if (viewDateEl && info.metaText) viewDateEl.textContent = info.metaText;
+
+    const authorViewEl = container.querySelector(".ytp-autonav-author-and-view");
+    if (authorViewEl) {
+      if (info.channel && info.metaText) {
+        authorViewEl.textContent = info.channel + " \u00B7 " + info.metaText;
+      } else if (info.metaText) {
+        authorViewEl.textContent = info.metaText;
+      }
+    }
+
+    if (info.videoId) {
+      const thumbEl = container.querySelector(
+        ".ytp-autonav-endscreen-upnext-thumbnail"
+      );
+      if (thumbEl) {
+        thumbEl.style.backgroundImage =
+          "url(https://i.ytimg.com/vi/" + info.videoId + "/hqdefault.jpg)";
+      }
+    }
+
+    const linkEl = container.querySelector("a.ytp-autonav-endscreen-link-container");
+    if (linkEl) linkEl.href = info.url;
+
+    // Hide live stamp — replacement passed our filter so it's not live
+    const liveStamp = container.querySelector(".ytp-autonav-live-stamp");
+    if (liveStamp) liveStamp.style.display = "none";
+
+    log("Autoplay: updated end card to show:", info.title);
+  }
+
+  /**
+   * Start a visual countdown before navigating to the replacement video.
+   */
+  function startCountdown(info) {
+    cancelCountdown();
+
+    let remaining = COUNTDOWN_SECONDS;
+
+    countdownOverlay = document.createElement("div");
+    countdownOverlay.className = "ytf-countdown-overlay";
+    countdownOverlay.innerHTML =
+      '<div class="ytf-countdown-content">' +
+        '<div class="ytf-countdown-text">Up next in ' +
+          '<span class="ytf-countdown-number">' + remaining + "</span>s</div>" +
+        '<div class="ytf-countdown-title">' +
+          info.title.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") +
+        "</div>" +
+        '<button class="ytf-countdown-cancel">Cancel</button>' +
+      "</div>";
+
+    const player = document.querySelector("#movie_player");
+    if (player) {
+      player.appendChild(countdownOverlay);
+    }
+
+    // Cancel button
+    countdownOverlay.querySelector(".ytf-countdown-cancel")
+      .addEventListener("click", function (e) {
+        e.stopPropagation();
+        log("Autoplay: countdown cancelled by user");
+        cancelCountdown();
+      });
+
+    // Cancel on player click outside overlay
+    playerClickHandler = function (e) {
+      if (countdownOverlay && countdownOverlay.contains(e.target)) return;
+      log("Autoplay: countdown cancelled by player click");
+      cancelCountdown();
+    };
+    if (player) player.addEventListener("click", playerClickHandler);
+
+    // Tick down every second
+    const numberEl = countdownOverlay.querySelector(".ytf-countdown-number");
+    countdownTimer = setInterval(function () {
+      remaining--;
+      if (numberEl) numberEl.textContent = remaining;
+      if (remaining <= 0) {
+        const anchor = info.anchor;
+        cancelCountdown();
+        navigateToVideo(anchor);
+      }
+    }, 1000);
+
+    log("Autoplay: countdown started (" + COUNTDOWN_SECONDS + "s)");
+  }
+
+  /**
+   * Cancel the countdown and remove the overlay.
+   */
+  function cancelCountdown() {
+    if (countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+    if (countdownOverlay) {
+      countdownOverlay.remove();
+      countdownOverlay = null;
+    }
+    if (playerClickHandler) {
+      const player = document.querySelector("#movie_player");
+      if (player) player.removeEventListener("click", playerClickHandler);
+      playerClickHandler = null;
+    }
+  }
 
   /**
    * Check the autoplay up-next container and decide whether to skip.
-   * Returns true if a skip navigation was initiated.
+   * Returns true if a skip was initiated.
    */
   function checkAutoplayAndSkip() {
     if (!location.pathname.startsWith("/watch")) return false;
@@ -394,8 +595,9 @@
     // Find a valid alternative from the sidebar recommendations
     const alternative = findSidebarAlternative();
     if (alternative) {
-      log("Autoplay: navigating to alternative:", alternative.title);
-      navigateToVideo(alternative.anchor);
+      log("Autoplay: replacement:", alternative.title);
+      updateEndCard(alternative);
+      startCountdown(alternative);
       return true;
     }
 
@@ -404,8 +606,9 @@
   }
 
   /**
-   * Find the first sidebar recommendation that passed filtering.
-   * Returns { anchor, title } or null.
+   * Find the first sidebar recommendation that passed filtering
+   * and hasn't been recently played.
+   * Returns { anchor, title, channel, metaText, videoId, url } or null.
    */
   function findSidebarAlternative() {
     const secondary =
@@ -413,16 +616,45 @@
       document.querySelector("#secondary-inner, #related");
     if (!secondary) return null;
 
-    // Look for items that passed our filter
     const passedItems = secondary.querySelectorAll(
       `ytd-compact-video-renderer[${FILTERED_ATTR}="pass"], yt-lockup-view-model[${FILTERED_ATTR}="pass"]`
     );
 
+    // First pass: skip recently played videos
     for (const item of passedItems) {
       const anchor = item.querySelector("a[href]");
-      if (anchor && anchor.href && anchor.href.includes("/watch")) {
-        const title = getVideoTitle(item);
-        return { anchor, title };
+      if (!anchor || !anchor.href || !anchor.href.includes("/watch")) continue;
+
+      const videoId = extractVideoId(anchor.href);
+      if (videoId && recentVideoIds.has(videoId)) continue;
+
+      return {
+        anchor,
+        title: getVideoTitle(item),
+        channel: getVideoChannel(item),
+        metaText: getVideoMetaText(item),
+        videoId,
+        url: anchor.href,
+      };
+    }
+
+    // All alternatives were recently played — clear history and retry
+    if (recentVideoIds.size > 0) {
+      log("Autoplay: all alternatives recently played, clearing history");
+      recentVideoIds.clear();
+
+      for (const item of passedItems) {
+        const anchor = item.querySelector("a[href]");
+        if (!anchor || !anchor.href || !anchor.href.includes("/watch")) continue;
+
+        return {
+          anchor,
+          title: getVideoTitle(item),
+          channel: getVideoChannel(item),
+          metaText: getVideoMetaText(item),
+          videoId: extractVideoId(anchor.href),
+          url: anchor.href,
+        };
       }
     }
 
@@ -606,6 +838,7 @@
     detachVideoEndedListener();
     stopVideoPolling();
     teardownAutoplayContainerObserver();
+    cancelCountdown();
   }
 
   // ---------------------------------------------------------------------------
@@ -614,6 +847,9 @@
 
   function onNavigate() {
     log("Navigation detected — rescanning");
+
+    // Record the video we just watched to prevent loops
+    recordCurrentVideo();
 
     // Clear all filter marks so we re-evaluate on the new page
     document.querySelectorAll(`[${FILTERED_ATTR}]`).forEach((el) => {
