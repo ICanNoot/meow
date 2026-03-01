@@ -1,0 +1,8 @@
+/*
+ * YouTube Feed Filter — Styles
+ * Hides filtered video elements and collapses their space.
+ */
+
+.ytf-hidden {
+  display: none !important;
+}
