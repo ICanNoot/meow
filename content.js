@@ -31,7 +31,7 @@
 
     if (/no views/i.test(cleaned)) return 0;
 
-    const match = cleaned.match(/([\d]+(?:\.[\d]+)?)\s*([KMBT]?)/i);
+    const match = cleaned.match(/([\d]+(?:\.[\d]+)?)\s*([KkMmBbTt]?)/);
     if (!match) return NaN;
 
     const num = parseFloat(match[1]);
@@ -50,8 +50,9 @@
    */
   function extractViewString(text) {
     if (!text) return null;
-    // Match "123 views", "1.2K views", "1,234,567 views", "No views", etc.
-    const m = text.match(/(?:no views|[\d,]+(?:\.[\d]+)?\s*[KMBT]?\s*views?)/i);
+    // Match "123 views", "1.2K views", "14m views", "1,234,567 views", "No views", etc.
+    // Use explicit lowercase+uppercase in char class rather than relying on /i for clarity
+    const m = text.match(/(?:no views|[\d,]+(?:\.[\d]+)?\s*[KkMmBbTt]?\s*views?)/i);
     return m ? m[0] : null;
   }
 
@@ -74,7 +75,7 @@
       if (txt === "LIVE" || txt === "LIVE NOW") return true;
     }
 
-    // 2. Badge renderers with "LIVE" text
+    // 2. Badge renderers with "LIVE" text (legacy layout)
     const badges = el.querySelectorAll(
       "ytd-badge-supported-renderer, .badge-style-type-live-now, .badge-style-type-live-now-alternate"
     );
@@ -83,15 +84,24 @@
       if (txt === "LIVE" || txt === "LIVE NOW") return true;
     }
 
-    // 3. Any element with aria-label containing "live"
+    // 3. New layout: yt-thumbnail-badge-view-model > badge-shape > .yt-badge-shape__text
+    const badgeTexts = el.querySelectorAll(
+      "yt-thumbnail-badge-view-model .yt-badge-shape__text, badge-shape .yt-badge-shape__text"
+    );
+    for (const bt of badgeTexts) {
+      const txt = (bt.textContent || "").trim().toUpperCase();
+      if (txt === "LIVE" || txt === "LIVE NOW") return true;
+    }
+
+    // 4. Any element with aria-label containing "live"
     const liveLabeled = el.querySelectorAll('[aria-label*="live" i], [aria-label*="Live" i], [aria-label*="LIVE"]');
     if (liveLabeled.length > 0) return true;
 
-    // 4. "watching now" in any text (live viewers indicator)
+    // 5. "watching now" in any text (live viewers indicator)
     const fullText = el.textContent || "";
     if (/\bwatching\b/i.test(fullText)) return true;
 
-    // 5. Check the aria-label on the title element for "watching" or "streamed"
+    // 6. Check the aria-label on the title element for "watching" or "streamed"
     const titleEl = el.querySelector("#video-title");
     if (titleEl) {
       const ariaLabel = titleEl.getAttribute("aria-label") || "";
@@ -145,7 +155,14 @@
       if (vs) return parseViewCount(vs);
     }
 
-    // Strategy 5: any span containing "views"
+    // Strategy 5: yt-content-metadata-view-model spans (new homepage layout)
+    const metaViewModel = el.querySelector("yt-content-metadata-view-model");
+    if (metaViewModel) {
+      const vs = extractViewString(metaViewModel.textContent);
+      if (vs) return parseViewCount(vs);
+    }
+
+    // Strategy 6: any span containing "views"
     const allSpans = el.querySelectorAll("span");
     for (const span of allSpans) {
       const txt = (span.textContent || "").trim();
@@ -155,7 +172,7 @@
       }
     }
 
-    // Strategy 6: brute-force search the entire element text
+    // Strategy 7: brute-force search the entire element text
     const fullText = el.textContent || "";
     const vs = extractViewString(fullText);
     if (vs) return parseViewCount(vs);
@@ -199,7 +216,7 @@
    */
   function getVideoTitle(el) {
     const titleEl = el.querySelector(
-      "#video-title, h3 a, yt-formatted-string#video-title"
+      "#video-title, h3 a, yt-formatted-string#video-title, yt-lockup-metadata-view-model h3"
     );
     return titleEl
       ? (titleEl.textContent || "").trim().slice(0, 80)
