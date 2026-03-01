@@ -312,82 +312,300 @@
   // Autoplay intervention
   // ---------------------------------------------------------------------------
 
-  let autoplayInterceptUrl = null;
-  let autoplayObserver = null;
+  let videoEndedBound = null;   // current bound listener ref
+  let videoElement = null;      // current <video> element
+  let videoPollingTimer = null; // polling interval for finding <video>
+  let autoplayContainerObserver = null; // MutationObserver on up-next container
 
-  function handleAutoplay() {
-    if (!location.pathname.startsWith("/watch")) return;
+  /**
+   * Check the autoplay up-next container and decide whether to skip.
+   * Returns true if a skip navigation was initiated.
+   */
+  function checkAutoplayAndSkip() {
+    if (!location.pathname.startsWith("/watch")) return false;
 
-    // Find the sidebar panel — try both Chrome and Firefox containers
+    const container = document.querySelector(
+      ".ytp-autonav-endscreen-upnext-container"
+    );
+    if (!container) {
+      log("Autoplay: up-next container not found");
+      return false;
+    }
+
+    // Container exists but may not be visible yet (clientHeight 0)
+    // Check if it has meaningful content by looking for the title
+    const titleEl = container.querySelector(
+      ".ytp-autonav-endscreen-upnext-title"
+    );
+    if (!titleEl || !titleEl.textContent.trim()) {
+      log("Autoplay: up-next container has no title yet");
+      return false;
+    }
+
+    const nextTitle = titleEl.textContent.trim();
+    let shouldSkip = false;
+    let skipReason = "";
+
+    // Check 1: data-is-live attribute
+    if (container.getAttribute("data-is-live") === "true") {
+      shouldSkip = true;
+      skipReason = "livestream (data-is-live)";
+    }
+
+    // Check 2: .ytp-autonav-live-stamp visible
+    if (!shouldSkip) {
+      const liveStamp = container.querySelector(".ytp-autonav-live-stamp");
+      if (liveStamp && liveStamp.textContent.trim()) {
+        shouldSkip = true;
+        skipReason = "livestream (live stamp)";
+      }
+    }
+
+    // Check 3: View/date text — "watching" means live, or parse view count
+    if (!shouldSkip) {
+      const viewDateEl = container.querySelector(
+        ".ytp-autonav-view-and-date"
+      );
+      if (viewDateEl) {
+        const viewText = viewDateEl.textContent.trim();
+        if (/\bwatching\b/i.test(viewText)) {
+          shouldSkip = true;
+          skipReason = "livestream (watching)";
+        } else {
+          const vs = extractViewString(viewText);
+          if (vs) {
+            const views = parseViewCount(vs);
+            if (!isNaN(views) && views < VIEW_THRESHOLD) {
+              shouldSkip = true;
+              skipReason = `low views (${views.toLocaleString()} < ${VIEW_THRESHOLD.toLocaleString()})`;
+            }
+          }
+        }
+      }
+    }
+
+    if (!shouldSkip) {
+      log("Autoplay: up-next video is OK:", nextTitle);
+      return false;
+    }
+
+    log("Autoplay: skipping up-next:", nextTitle, "—", skipReason);
+
+    // Find a valid alternative from the sidebar recommendations
+    const alternative = findSidebarAlternative();
+    if (alternative) {
+      log("Autoplay: navigating to alternative:", alternative.title);
+      navigateToVideo(alternative.anchor);
+      return true;
+    }
+
+    log("Autoplay: no valid sidebar alternative found");
+    return false;
+  }
+
+  /**
+   * Find the first sidebar recommendation that passed filtering.
+   * Returns { anchor, title } or null.
+   */
+  function findSidebarAlternative() {
     const secondary =
       document.querySelector("ytd-watch-next-secondary-results-renderer") ||
       document.querySelector("#secondary-inner, #related");
-    if (!secondary) return;
+    if (!secondary) return null;
 
-    // Query both Chrome (ytd-compact-video-renderer) and Firefox (yt-lockup-view-model) items
-    const items = secondary.querySelectorAll(
-      "ytd-compact-video-renderer, yt-lockup-view-model"
+    // Look for items that passed our filter
+    const passedItems = secondary.querySelectorAll(
+      `ytd-compact-video-renderer[${FILTERED_ATTR}="pass"], yt-lockup-view-model[${FILTERED_ATTR}="pass"]`
     );
-    if (items.length === 0) return;
 
-    const first = items[0];
-
-    // If already hidden, we've already handled it
-    if (first.getAttribute(FILTERED_ATTR) === "1") return;
-
-    // If already passed, nothing to do
-    if (first.getAttribute(FILTERED_ATTR) === "pass") return;
-
-    const { hide, reason } = shouldHide(first);
-    if (!hide) return;
-
-    log("Autoplay candidate is filtered:", getVideoTitle(first), "—", reason);
-    first.setAttribute(FILTERED_ATTR, "1");
-    first.classList.add("ytf-hidden");
-
-    // Find the next valid video
-    for (let i = 1; i < items.length; i++) {
-      const candidate = items[i];
-      const check = shouldHide(candidate);
-      if (!check.hide && !check.indeterminate) {
-        log("Selecting next valid autoplay:", getVideoTitle(candidate));
-        const link = candidate.querySelector("a");
-        if (link && link.href) {
-          interceptAutoplay(link.href);
-        }
-        return;
+    for (const item of passedItems) {
+      const anchor = item.querySelector("a[href]");
+      if (anchor && anchor.href && anchor.href.includes("/watch")) {
+        const title = getVideoTitle(item);
+        return { anchor, title };
       }
+    }
+
+    return null;
+  }
+
+  /**
+   * Navigate to a video via its anchor element.
+   * Prefers .click() for SPA transition, falls back to location change.
+   */
+  function navigateToVideo(anchor) {
+    const url = anchor.href;
+    try {
+      anchor.click();
+      log("Autoplay: clicked sidebar link for SPA navigation");
+      // Verify navigation happened after a short delay
+      setTimeout(() => {
+        // If we're still on the same page, fall back to location change
+        if (location.href !== url && !location.href.includes(new URL(url).searchParams.get("v"))) {
+          log("Autoplay: click didn't navigate, falling back to location.href");
+          window.location.href = url;
+        }
+      }, 1000);
+    } catch (e) {
+      log("Autoplay: click failed, using location.href fallback");
+      window.location.href = url;
     }
   }
 
-  function interceptAutoplay(validUrl) {
-    autoplayInterceptUrl = validUrl;
-    if (autoplayObserver) return;
+  /**
+   * Handler for the <video> ended event.
+   */
+  function onVideoEnded() {
+    log("Autoplay: video ended event fired");
+    checkAutoplayAndSkip();
+  }
 
-    const playerContainer = document.querySelector(
-      "#movie_player, ytd-player"
+  /**
+   * Attach the ended listener to the current <video> element.
+   */
+  function attachVideoEndedListener() {
+    const video = document.querySelector("#movie_player video");
+    if (!video) return false;
+
+    // Already attached to this element
+    if (video === videoElement && videoEndedBound) return true;
+
+    // Detach from previous element if any
+    detachVideoEndedListener();
+
+    videoElement = video;
+    videoEndedBound = onVideoEnded;
+    video.addEventListener("ended", videoEndedBound);
+    log("Autoplay: attached ended listener to <video>");
+    return true;
+  }
+
+  /**
+   * Detach the ended listener from the current video element.
+   */
+  function detachVideoEndedListener() {
+    if (videoElement && videoEndedBound) {
+      videoElement.removeEventListener("ended", videoEndedBound);
+      log("Autoplay: detached ended listener from <video>");
+    }
+    videoElement = null;
+    videoEndedBound = null;
+  }
+
+  /**
+   * Poll for the <video> element (YouTube loads it dynamically).
+   * Polls every 1s for up to 30 seconds, then stops.
+   */
+  function startVideoPolling() {
+    stopVideoPolling();
+
+    if (!location.pathname.startsWith("/watch")) return;
+
+    let elapsed = 0;
+    const POLL_INTERVAL = 1000;
+    const MAX_POLL_TIME = 30000;
+
+    // Try immediately first
+    if (attachVideoEndedListener()) {
+      setupAutoplayContainerObserver();
+      return;
+    }
+
+    videoPollingTimer = setInterval(() => {
+      elapsed += POLL_INTERVAL;
+
+      if (attachVideoEndedListener()) {
+        stopVideoPolling();
+        setupAutoplayContainerObserver();
+        return;
+      }
+
+      if (elapsed >= MAX_POLL_TIME) {
+        log("Autoplay: gave up polling for <video> after 30s");
+        stopVideoPolling();
+      }
+    }, POLL_INTERVAL);
+  }
+
+  /**
+   * Stop polling for the video element.
+   */
+  function stopVideoPolling() {
+    if (videoPollingTimer) {
+      clearInterval(videoPollingTimer);
+      videoPollingTimer = null;
+    }
+  }
+
+  /**
+   * Set up a MutationObserver on the autoplay up-next container as a backup.
+   * Watches for attribute changes (data-is-live) and visibility changes.
+   */
+  function setupAutoplayContainerObserver() {
+    teardownAutoplayContainerObserver();
+
+    if (!location.pathname.startsWith("/watch")) return;
+
+    const container = document.querySelector(
+      ".ytp-autonav-endscreen-upnext-container"
     );
-    if (!playerContainer) return;
+    if (!container) {
+      // Container may not exist yet — try again shortly
+      setTimeout(setupAutoplayContainerObserver, 2000);
+      return;
+    }
 
-    autoplayObserver = new MutationObserver(() => {
-      if (!autoplayInterceptUrl) return;
-
-      const countdown = document.querySelector(
-        ".ytp-autonav-endscreen-countdown, .ytp-autonav-endscreen-upnext-container"
-      );
-      if (countdown) {
-        log("Autoplay countdown detected — redirecting to valid video");
-        const url = autoplayInterceptUrl;
-        autoplayInterceptUrl = null;
-        window.location.href = url;
+    autoplayContainerObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        // Trigger on attribute changes (data-is-live being set, style changes)
+        if (
+          mutation.type === "attributes" &&
+          (mutation.attributeName === "data-is-live" ||
+            mutation.attributeName === "style" ||
+            mutation.attributeName === "class")
+        ) {
+          // Check if container is now visible (clientHeight > 0)
+          if (container.clientHeight > 0) {
+            log("Autoplay: container became visible (attribute change)");
+            checkAutoplayAndSkip();
+            return;
+          }
+        }
+        // Also trigger on child changes (content being populated)
+        if (mutation.type === "childList" && container.clientHeight > 0) {
+          log("Autoplay: container content changed while visible");
+          checkAutoplayAndSkip();
+          return;
+        }
       }
     });
 
-    autoplayObserver.observe(playerContainer, {
+    autoplayContainerObserver.observe(container, {
+      attributes: true,
       childList: true,
       subtree: true,
-      attributes: true,
     });
+
+    log("Autoplay: MutationObserver active on up-next container");
+  }
+
+  /**
+   * Tear down the autoplay container observer.
+   */
+  function teardownAutoplayContainerObserver() {
+    if (autoplayContainerObserver) {
+      autoplayContainerObserver.disconnect();
+      autoplayContainerObserver = null;
+    }
+  }
+
+  /**
+   * Clean up all autoplay state (for navigation resets).
+   */
+  function cleanupAutoplay() {
+    detachVideoEndedListener();
+    stopVideoPolling();
+    teardownAutoplayContainerObserver();
   }
 
   // ---------------------------------------------------------------------------
@@ -403,17 +621,14 @@
       el.classList.remove("ytf-hidden");
     });
 
-    // Clean up autoplay interception
-    autoplayInterceptUrl = null;
-    if (autoplayObserver) {
-      autoplayObserver.disconnect();
-      autoplayObserver = null;
-    }
+    // Clean up all autoplay state — YouTube creates new video elements on nav
+    cleanupAutoplay();
 
     // Re-scan after a brief delay to let YouTube render new content
     setTimeout(() => {
       scanAndFilter();
-      handleAutoplay();
+      // Start polling for the new video element and set up autoplay interception
+      startVideoPolling();
     }, 500);
   }
 
@@ -430,7 +645,6 @@
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       scanAndFilter();
-      handleAutoplay();
     }, DEBOUNCE_MS);
   }
 
@@ -453,7 +667,6 @@
       );
       if (unresolved.length > 0) {
         scanAndFilter();
-        handleAutoplay();
       }
     }, RESCAN_INTERVAL_MS);
   }
@@ -470,7 +683,9 @@
     );
 
     scanAndFilter();
-    handleAutoplay();
+
+    // Start polling for <video> element and set up autoplay interception
+    startVideoPolling();
 
     // Observe body for all DOM changes (child additions, text, attributes)
     observer.observe(document.body, {
