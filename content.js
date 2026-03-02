@@ -46,6 +46,7 @@
       el.removeAttribute(FILTERED_ATTR);
       el.classList.remove("ytf-hidden");
     });
+    updateDynamicStyles();
     scanAndFilter();
   }
 
@@ -571,43 +572,175 @@
     }
   }
 
+  // Sidebar entry selectors — includes both ytd- (Chrome) and yt- (Firefox) prefixes
+  const GUIDE_ENTRY_SELECTORS =
+    "ytd-guide-entry-renderer, ytd-mini-guide-entry-renderer, " +
+    "ytd-guide-collapsible-entry-renderer, " +
+    "yt-guide-entry-renderer, yt-mini-guide-entry-renderer";
+
   /**
    * Hide the Shorts sidebar entry in the guide panel and mini-guide.
-   * Also hides Shorts shelves in search results (ytd-reel-shelf-renderer).
+   * Uses three strategies: href matching, title attribute, and text content.
    */
   function filterShortsNav() {
     if (!settings.hideShorts) return;
 
-    // Full guide entries (left sidebar)
-    const guideEntries = document.querySelectorAll(
-      "ytd-guide-entry-renderer, ytd-mini-guide-entry-renderer"
+    // Strategy 1: Links by href (multiple patterns for different YouTube versions)
+    const hrefLinks = document.querySelectorAll(
+      'a[href="/shorts"], a[href="/shorts/"], a[href*="youtube.com/shorts"]'
     );
+    for (const link of hrefLinks) {
+      hideSidebarEntry(link, "Shorts (href)");
+    }
+
+    // Strategy 2: Links/entries by title attribute
+    const titledEls = document.querySelectorAll(
+      'a[title="Shorts"], [title="Shorts"]'
+    );
+    for (const el of titledEls) {
+      hideSidebarEntry(el, "Shorts (title)");
+    }
+
+    // Strategy 3: Text content scan inside guide entries
+    const guideEntries = document.querySelectorAll(GUIDE_ENTRY_SELECTORS);
     for (const entry of guideEntries) {
       if (entry.hasAttribute(FILTERED_ATTR)) continue;
-      const link = entry.querySelector('a[href]');
-      if (link && /\/shorts\b/.test(link.getAttribute("href"))) {
+      if (/^\s*Shorts\s*$/.test(entry.textContent)) {
         entry.setAttribute(FILTERED_ATTR, "1");
         entry.classList.add("ytf-hidden");
-        log("Hiding sidebar entry: Shorts");
+        log("Hiding sidebar entry: Shorts (text)");
       }
     }
   }
 
+  function hideSidebarEntry(el, reason) {
+    const entry = el.closest(GUIDE_ENTRY_SELECTORS);
+    const target = entry || el.parentElement;
+    if (!target || target.hasAttribute(FILTERED_ATTR)) return;
+    target.setAttribute(FILTERED_ATTR, "1");
+    target.classList.add("ytf-hidden");
+    log("Hiding sidebar entry:", reason);
+  }
+
   /**
    * Hide the topic chips bar at the top of the homepage feed.
+   * Targets the chip bar AND walks up to hide the parent background container
+   * that provides the visible background/padding/sticky positioning.
    */
   function filterTopicChips() {
     if (!settings.hideTopicChips) return;
 
     const chipBars = document.querySelectorAll(
       "ytd-feed-filter-chip-bar-renderer, yt-chip-cloud-renderer, " +
-      "yt-chip-cloud-view-model, iron-selector#chips"
+      "yt-chip-cloud-view-model"
     );
     for (const bar of chipBars) {
       if (bar.hasAttribute(FILTERED_ATTR)) continue;
       bar.setAttribute(FILTERED_ATTR, "1");
       bar.classList.add("ytf-hidden");
-      log("Hiding topic chips bar");
+
+      // Walk UP from the chip bar to find and hide the parent container
+      // that provides the background/padding (typically a #header div
+      // or a #chip-bar wrapper inside the grid renderer).
+      let el = bar.parentElement;
+      let hidParent = false;
+      while (el && el !== document.body) {
+        const tag = el.tagName.toLowerCase();
+        // Stop at page-level boundaries
+        if (tag === "ytd-browse" || tag === "ytd-page-manager" ||
+            tag === "ytd-app" || tag === "yt-page-navigation-progress") break;
+
+        // Hide any container with id="header" or id="chip-bar"
+        if (el.id === "header" || el.id === "chip-bar") {
+          if (!el.hasAttribute(FILTERED_ATTR)) {
+            el.setAttribute(FILTERED_ATTR, "1");
+            el.classList.add("ytf-hidden");
+            log("Hiding topic chips container:", tag + "#" + el.id);
+            hidParent = true;
+          }
+        }
+
+        // Also hide the grid renderer's header child (different structure)
+        if (tag.includes("rich-grid") || tag.includes("section-list")) {
+          const header = el.querySelector(":scope > #header");
+          if (header && !header.hasAttribute(FILTERED_ATTR)) {
+            header.setAttribute(FILTERED_ATTR, "1");
+            header.classList.add("ytf-hidden");
+            log("Hiding topic chips grid header");
+            hidParent = true;
+          }
+        }
+
+        el = el.parentElement;
+      }
+
+      if (!hidParent) {
+        log("Hiding topic chips bar (no parent container found)");
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dynamic CSS — reliable structural hiding that CSS handles better than JS
+  // ---------------------------------------------------------------------------
+
+  let ytfDynamicStyle = null;
+
+  /**
+   * Inject/update a <style> element with CSS rules based on current settings.
+   * This handles structural elements (sidebar nav entries, chip bar background,
+   * search result shelves) that are difficult to target via JS DOM scanning
+   * because they load lazily or use unpredictable wrapper elements.
+   */
+  function updateDynamicStyles() {
+    let css = "";
+
+    if (settings.hideShorts) {
+      css +=
+        "/* Shorts sidebar entries — multiple strategies for Firefox/Chrome */\n" +
+        'ytd-guide-entry-renderer:has(a[href="/shorts"]),\n' +
+        'ytd-guide-entry-renderer:has(a[href*="youtube.com/shorts"]),\n' +
+        'ytd-guide-entry-renderer:has(a[title="Shorts"]),\n' +
+        'ytd-mini-guide-entry-renderer:has(a[href="/shorts"]),\n' +
+        'ytd-mini-guide-entry-renderer:has(a[href*="youtube.com/shorts"]),\n' +
+        'ytd-mini-guide-entry-renderer:has(a[title="Shorts"]),\n' +
+        'ytd-guide-collapsible-entry-renderer:has(a[href="/shorts"]),\n' +
+        'ytd-guide-collapsible-entry-renderer:has(a[title="Shorts"]),\n' +
+        'yt-guide-entry-renderer:has(a[href="/shorts"]),\n' +
+        'yt-guide-entry-renderer:has(a[title="Shorts"]),\n' +
+        'yt-mini-guide-entry-renderer:has(a[href="/shorts"]),\n' +
+        'yt-mini-guide-entry-renderer:has(a[title="Shorts"]) {\n' +
+        "  display: none !important;\n}\n" +
+        "/* Shorts shelves in search results and homepage */\n" +
+        "ytd-reel-shelf-renderer {\n" +
+        "  display: none !important;\n}\n";
+    }
+
+    if (settings.hideTopicChips) {
+      css +=
+        "/* Topic chip bars */\n" +
+        "ytd-feed-filter-chip-bar-renderer,\n" +
+        "yt-chip-cloud-renderer,\n" +
+        "yt-chip-cloud-view-model {\n" +
+        "  display: none !important;\n}\n" +
+        "/* Parent background containers — multiple possible structures */\n" +
+        "ytd-rich-grid-renderer > #header,\n" +
+        "ytd-rich-grid-renderer #header,\n" +
+        "yt-rich-grid-renderer > #header,\n" +
+        "yt-rich-grid-renderer #header {\n" +
+        "  display: none !important;\n}\n";
+    }
+
+    if (css) {
+      if (!ytfDynamicStyle) {
+        ytfDynamicStyle = document.createElement("style");
+        ytfDynamicStyle.id = "ytf-dynamic-styles";
+        (document.head || document.documentElement).appendChild(ytfDynamicStyle);
+      }
+      ytfDynamicStyle.textContent = css;
+    } else if (ytfDynamicStyle) {
+      ytfDynamicStyle.remove();
+      ytfDynamicStyle = null;
     }
   }
 
@@ -1286,6 +1419,7 @@
         "views)"
       );
 
+      updateDynamicStyles();
       scanAndFilter();
 
       if (settings.autoplayIntercept) {
