@@ -22,6 +22,8 @@
     hideMixes: true,
     hidePlayables: true,
     hideMembersOnly: true,
+    hideExploreTopics: true,
+    hideTopicChips: true,
     autoplayIntercept: true,
     countdownSeconds: 10,
   };
@@ -511,6 +513,8 @@
     }
 
     scanAndFilterShelves();
+    filterShortsNav();
+    filterTopicChips();
   }
 
   // Selectors for shelf / section containers on the homepage.
@@ -522,10 +526,11 @@
     "ytd-shelf-renderer",          // Legacy shelf (Chrome)
   ].join(", ");
 
-  // Maps a heading keyword (uppercase) to { settingKey, reason }
+  // Maps a heading pattern to { settingKey, reason }
   const SHELF_FILTERS = [
-    { pattern: /\bplayable/i,  settingKey: "hidePlayables", reason: "playables shelf" },
-    { pattern: /\bshorts\b/i,  settingKey: "hideShorts",    reason: "shorts shelf" },
+    { pattern: /\bplayable/i,         settingKey: "hidePlayables",    reason: "playables shelf" },
+    { pattern: /\bshorts\b/i,         settingKey: "hideShorts",       reason: "shorts shelf" },
+    { pattern: /\bexplore\b.*topic/i, settingKey: "hideExploreTopics", reason: "explore topics shelf" },
   ];
 
   /**
@@ -563,6 +568,46 @@
       if (!shelf.hasAttribute(FILTERED_ATTR)) {
         shelf.setAttribute(FILTERED_ATTR, "pass");
       }
+    }
+  }
+
+  /**
+   * Hide the Shorts sidebar entry in the guide panel and mini-guide.
+   * Also hides Shorts shelves in search results (ytd-reel-shelf-renderer).
+   */
+  function filterShortsNav() {
+    if (!settings.hideShorts) return;
+
+    // Full guide entries (left sidebar)
+    const guideEntries = document.querySelectorAll(
+      "ytd-guide-entry-renderer, ytd-mini-guide-entry-renderer"
+    );
+    for (const entry of guideEntries) {
+      if (entry.hasAttribute(FILTERED_ATTR)) continue;
+      const link = entry.querySelector('a[href]');
+      if (link && /\/shorts\b/.test(link.getAttribute("href"))) {
+        entry.setAttribute(FILTERED_ATTR, "1");
+        entry.classList.add("ytf-hidden");
+        log("Hiding sidebar entry: Shorts");
+      }
+    }
+  }
+
+  /**
+   * Hide the topic chips bar at the top of the homepage feed.
+   */
+  function filterTopicChips() {
+    if (!settings.hideTopicChips) return;
+
+    const chipBars = document.querySelectorAll(
+      "ytd-feed-filter-chip-bar-renderer, yt-chip-cloud-renderer, " +
+      "yt-chip-cloud-view-model, iron-selector#chips"
+    );
+    for (const bar of chipBars) {
+      if (bar.hasAttribute(FILTERED_ATTR)) continue;
+      bar.setAttribute(FILTERED_ATTR, "1");
+      bar.classList.add("ytf-hidden");
+      log("Hiding topic chips bar");
     }
   }
 

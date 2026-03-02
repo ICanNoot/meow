@@ -8,6 +8,8 @@ const DEFAULTS = {
   hideMixes: true,
   hidePlayables: true,
   hideMembersOnly: true,
+  hideExploreTopics: true,
+  hideTopicChips: true,
   autoplayIntercept: true,
   countdownSeconds: 10,
 };
@@ -19,6 +21,8 @@ const TOGGLE_IDS = [
   "hideMixes",
   "hidePlayables",
   "hideMembersOnly",
+  "hideExploreTopics",
+  "hideTopicChips",
   "autoplayIntercept",
 ];
 
