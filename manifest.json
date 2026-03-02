@@ -1,13 +1,16 @@
 {
   "manifest_version": 3,
   "name": "YouTube Feed Filter",
-  "version": "1.0.0",
-  "description": "Filters out livestreams and low-view-count videos from YouTube's homepage, search results, sidebar recommendations, and autoplay.",
+  "version": "1.1.0",
+  "description": "Filters out livestreams, low-view-count videos, Shorts, Mixes, Playables, and members-only content from YouTube.",
   "browser_specific_settings": {
     "gecko": {
       "id": "youtube-feed-filter@example.com",
       "strict_min_version": "109.0"
     }
+  },
+  "action": {
+    "default_popup": "popup.html"
   },
   "content_scripts": [
     {
@@ -17,5 +20,5 @@
       "run_at": "document_idle"
     }
   ],
-  "permissions": []
+  "permissions": ["storage"]
 }

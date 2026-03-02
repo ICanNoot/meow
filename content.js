@@ -1,14 +1,75 @@
 // YouTube Feed Filter — Content Script
-// Filters livestreams and videos with < 50,000 views from YouTube.
+// Filters livestreams, low-view videos, Shorts, Mixes, Playables,
+// and members-only content from YouTube.
 
 (function () {
   "use strict";
 
-  const VIEW_THRESHOLD = 50000;
   const LOG_PREFIX = "[YT-Filter]";
   const DEBOUNCE_MS = 250;
   const RESCAN_INTERVAL_MS = 2000;
   const FILTERED_ATTR = "data-ytf-filtered";
+
+  // ---------------------------------------------------------------------------
+  // Settings — loaded from browser.storage.local, updated via popup messages
+  // ---------------------------------------------------------------------------
+
+  const SETTINGS_DEFAULTS = {
+    hideLivestreams: true,
+    hideLowViews: true,
+    viewThreshold: 50000,
+    hideShorts: true,
+    hideMixes: true,
+    hidePlayables: true,
+    hideMembersOnly: true,
+    autoplayIntercept: true,
+    countdownSeconds: 10,
+  };
+
+  // Live copy of settings — mutated in place when updates arrive
+  const settings = Object.assign({}, SETTINGS_DEFAULTS);
+
+  function loadSettings() {
+    return browser.storage.local.get(SETTINGS_DEFAULTS).then((stored) => {
+      Object.assign(settings, stored);
+      log("Settings loaded:", JSON.stringify(settings));
+    });
+  }
+
+  /**
+   * Clear all filter marks and rescan the page.
+   */
+  function resetAndRescan() {
+    document.querySelectorAll(`[${FILTERED_ATTR}]`).forEach((el) => {
+      el.removeAttribute(FILTERED_ATTR);
+      el.classList.remove("ytf-hidden");
+    });
+    scanAndFilter();
+  }
+
+  // Listen for live updates from the popup
+  browser.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === "ytf-settings-update" && msg.settings) {
+      const prev = Object.assign({}, settings);
+      Object.assign(settings, msg.settings);
+      log("Settings updated:", JSON.stringify(msg.settings));
+
+      // If autoplay interception was toggled
+      if ("autoplayIntercept" in msg.settings) {
+        if (settings.autoplayIntercept) {
+          startVideoPolling();
+        } else {
+          cleanupAutoplay();
+        }
+      }
+
+      // If countdown seconds changed while a countdown is active, let it
+      // finish with the old value — next skip will use the new value.
+
+      // Rescan to apply changed filters
+      resetAndRescan();
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // Utility helpers
@@ -20,9 +81,6 @@
 
   /**
    * Parse YouTube's abbreviated view counts into a number.
-   * Handles: "1.2M views", "350K views", "50 views", "No views",
-   *          "1,234,567 views", "5.1B views", etc.
-   * Returns NaN when the string cannot be parsed.
    */
   function parseViewCount(text) {
     if (!text) return NaN;
@@ -46,12 +104,9 @@
 
   /**
    * Extract a view-count string from a larger text blob.
-   * Returns the matched substring or null.
    */
   function extractViewString(text) {
     if (!text) return null;
-    // Match "123 views", "1.2K views", "14m views", "1,234,567 views", "No views", etc.
-    // Use explicit lowercase+uppercase in char class rather than relying on /i for clarity
     const m = text.match(/(?:no views|[\d,]+(?:\.[\d]+)?\s*[KkMmBbTt]?\s*views?)/i);
     return m ? m[0] : null;
   }
@@ -61,10 +116,9 @@
   // ---------------------------------------------------------------------------
 
   /**
-   * Check whether a video element carries a LIVE badge / is a livestream.
+   * Check whether a video element is a livestream.
    */
   function isLiveStream(el) {
-    // 1. Thumbnail overlay with overlay-style="LIVE"
     const overlays = el.querySelectorAll(
       "ytd-thumbnail-overlay-time-status-renderer"
     );
@@ -75,7 +129,6 @@
       if (txt === "LIVE" || txt === "LIVE NOW") return true;
     }
 
-    // 2. Badge renderers with "LIVE" text (legacy layout)
     const badges = el.querySelectorAll(
       "ytd-badge-supported-renderer, .badge-style-type-live-now, .badge-style-type-live-now-alternate"
     );
@@ -84,8 +137,6 @@
       if (txt === "LIVE" || txt === "LIVE NOW") return true;
     }
 
-    // 3. New layout (Firefox): yt-badge-view-model, yt-thumbnail-badge-view-model,
-    //    and badge-shape > .yt-badge-shape__text
     const badgeTexts = el.querySelectorAll(
       [
         "yt-badge-view-model .yt-badge-shape__text",
@@ -98,15 +149,12 @@
       if (txt === "LIVE" || txt === "LIVE NOW") return true;
     }
 
-    // 4. Any element with aria-label containing "live"
     const liveLabeled = el.querySelectorAll('[aria-label*="live" i], [aria-label*="Live" i], [aria-label*="LIVE"]');
     if (liveLabeled.length > 0) return true;
 
-    // 5. "watching now" in any text (live viewers indicator)
     const fullText = el.textContent || "";
     if (/\bwatching\b/i.test(fullText)) return true;
 
-    // 6. Check the aria-label on the title element for "watching" or "streamed"
     const titleEl = el.querySelector("#video-title");
     if (titleEl) {
       const ariaLabel = titleEl.getAttribute("aria-label") || "";
@@ -118,18 +166,14 @@
 
   /**
    * Extract the view count from a video element.
-   * Returns the parsed number, or NaN if not found.
    */
   function getViewCount(el) {
-    // Strategy 1: yt-content-metadata-view-model (Firefox / new layout)
-    // Contains spans like "14m views" / "350k views"
     const metaViewModel = el.querySelector("yt-content-metadata-view-model");
     if (metaViewModel) {
       const vs = extractViewString(metaViewModel.textContent);
       if (vs) return parseViewCount(vs);
     }
 
-    // Strategy 2: aria-label on #video-title or a#video-title-link (Chrome)
     const titleEl = el.querySelector("#video-title");
     if (titleEl) {
       const label = titleEl.getAttribute("aria-label") || "";
@@ -144,28 +188,24 @@
       if (vs) return parseViewCount(vs);
     }
 
-    // Strategy 3: ytd-video-meta-block text (Chrome homepage / search)
     const metaBlock = el.querySelector("ytd-video-meta-block");
     if (metaBlock) {
       const vs = extractViewString(metaBlock.textContent);
       if (vs) return parseViewCount(vs);
     }
 
-    // Strategy 4: #metadata-line (Chrome compact renderers / sidebar)
     const metaLine = el.querySelector("#metadata-line");
     if (metaLine) {
       const vs = extractViewString(metaLine.textContent);
       if (vs) return parseViewCount(vs);
     }
 
-    // Strategy 5: #metadata (Chrome fallback)
     const metadata = el.querySelector("#metadata");
     if (metadata) {
       const vs = extractViewString(metadata.textContent);
       if (vs) return parseViewCount(vs);
     }
 
-    // Strategy 6: any span containing "views"
     const allSpans = el.querySelectorAll("span");
     for (const span of allSpans) {
       const txt = (span.textContent || "").trim();
@@ -175,12 +215,168 @@
       }
     }
 
-    // Strategy 7: brute-force search the entire element text
     const fullText = el.textContent || "";
     const vs = extractViewString(fullText);
     if (vs) return parseViewCount(vs);
 
     return NaN;
+  }
+
+  /**
+   * Check whether a video element is a YouTube Short.
+   */
+  function isShort(el) {
+    // 1. ytd-reel-item-renderer is always a Short
+    if (el.tagName === "YTD-REEL-ITEM-RENDERER") return true;
+
+    // 2. Link containing /shorts/
+    const anchors = el.querySelectorAll("a[href]");
+    for (const a of anchors) {
+      if (a.href && a.href.includes("/shorts/")) return true;
+    }
+
+    // 3. Thumbnail overlay with "SHORTS" badge
+    const overlays = el.querySelectorAll(
+      "ytd-thumbnail-overlay-time-status-renderer"
+    );
+    for (const overlay of overlays) {
+      const style = overlay.getAttribute("overlay-style");
+      if (style === "SHORTS") return true;
+      const txt = (overlay.textContent || "").trim().toUpperCase();
+      if (txt === "SHORTS") return true;
+    }
+
+    // 4. Badge text "SHORTS" (Firefox / new layout)
+    const badgeTexts = el.querySelectorAll(
+      [
+        "yt-badge-view-model .yt-badge-shape__text",
+        "yt-thumbnail-badge-view-model .yt-badge-shape__text",
+        "badge-shape .yt-badge-shape__text",
+      ].join(", ")
+    );
+    for (const bt of badgeTexts) {
+      const txt = (bt.textContent || "").trim().toUpperCase();
+      if (txt === "SHORTS") return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Check whether a video element is a YouTube Mix.
+   */
+  function isMix(el) {
+    // 1. ytd-radio-renderer is always a Mix
+    if (el.tagName === "YTD-RADIO-RENDERER") return true;
+
+    // 2. Link with &start_radio=1 or &list=RD
+    const anchors = el.querySelectorAll("a[href]");
+    for (const a of anchors) {
+      if (!a.href) continue;
+      if (a.href.includes("start_radio=1")) return true;
+      if (/[?&]list=RD/.test(a.href)) return true;
+    }
+
+    // 3. Title starting with "Mix -" or "Mix –"
+    const title = getVideoTitle(el);
+    if (/^Mix\s*[-–]/.test(title)) return true;
+
+    // 4. Thumbnail overlay with "MIX" badge
+    const overlays = el.querySelectorAll(
+      "ytd-thumbnail-overlay-time-status-renderer"
+    );
+    for (const overlay of overlays) {
+      const txt = (overlay.textContent || "").trim().toUpperCase();
+      if (txt === "MIX") return true;
+    }
+
+    // 5. Badge text "Mix" (Firefox / new layout)
+    const badgeTexts = el.querySelectorAll(
+      [
+        "yt-badge-view-model .yt-badge-shape__text",
+        "yt-thumbnail-badge-view-model .yt-badge-shape__text",
+        "badge-shape .yt-badge-shape__text",
+      ].join(", ")
+    );
+    for (const bt of badgeTexts) {
+      const txt = (bt.textContent || "").trim().toUpperCase();
+      if (txt === "MIX") return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Check whether a video element is a YouTube Playable.
+   */
+  function isPlayable(el) {
+    // 1. Link containing /playables/
+    const anchors = el.querySelectorAll("a[href]");
+    for (const a of anchors) {
+      if (a.href && a.href.includes("/playables/")) return true;
+    }
+
+    // 2. Badge text "Playable" or "Play game"
+    const badgeTexts = el.querySelectorAll(
+      [
+        "ytd-badge-supported-renderer",
+        "yt-badge-view-model .yt-badge-shape__text",
+        "yt-thumbnail-badge-view-model .yt-badge-shape__text",
+        "badge-shape .yt-badge-shape__text",
+      ].join(", ")
+    );
+    for (const bt of badgeTexts) {
+      const txt = (bt.textContent || "").trim().toUpperCase();
+      if (txt === "PLAYABLE" || txt === "PLAY GAME") return true;
+    }
+
+    // 3. Thumbnail overlay with "PLAYABLE"
+    const overlays = el.querySelectorAll(
+      "ytd-thumbnail-overlay-time-status-renderer"
+    );
+    for (const overlay of overlays) {
+      const txt = (overlay.textContent || "").trim().toUpperCase();
+      if (txt === "PLAYABLE" || txt === "PLAY GAME") return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Check whether a video element is members-only content.
+   */
+  function isMembersOnly(el) {
+    // 1. Badge text "Members only"
+    const badgeTexts = el.querySelectorAll(
+      [
+        "ytd-badge-supported-renderer",
+        "yt-badge-view-model .yt-badge-shape__text",
+        "yt-thumbnail-badge-view-model .yt-badge-shape__text",
+        "badge-shape .yt-badge-shape__text",
+      ].join(", ")
+    );
+    for (const bt of badgeTexts) {
+      const txt = (bt.textContent || "").trim().toUpperCase();
+      if (txt === "MEMBERS ONLY") return true;
+    }
+
+    // 2. Aria-labels or metadata containing "Members only"
+    const titleEl = el.querySelector("#video-title");
+    if (titleEl) {
+      const ariaLabel = titleEl.getAttribute("aria-label") || "";
+      if (/members only/i.test(ariaLabel)) return true;
+    }
+
+    // 3. Membership overlay on thumbnail
+    const overlays = el.querySelectorAll(
+      "ytd-thumbnail-overlay-time-status-renderer"
+    );
+    for (const overlay of overlays) {
+      const txt = (overlay.textContent || "").trim().toUpperCase();
+      if (txt === "MEMBERS ONLY") return true;
+    }
+
+    return false;
   }
 
   // ---------------------------------------------------------------------------
@@ -192,23 +388,40 @@
    * Returns { hide: boolean, reason: string, indeterminate: boolean }
    */
   function shouldHide(el) {
-    if (isLiveStream(el)) {
+    if (settings.hideLivestreams && isLiveStream(el)) {
       return { hide: true, reason: "livestream", indeterminate: false };
     }
 
-    const views = getViewCount(el);
-
-    // If we can't determine views, mark as indeterminate so we re-check later
-    if (isNaN(views)) {
-      return { hide: false, reason: "", indeterminate: true };
+    if (settings.hideShorts && isShort(el)) {
+      return { hide: true, reason: "short", indeterminate: false };
     }
 
-    if (views < VIEW_THRESHOLD) {
-      return {
-        hide: true,
-        reason: `low views (${views.toLocaleString()} < ${VIEW_THRESHOLD.toLocaleString()})`,
-        indeterminate: false,
-      };
+    if (settings.hideMixes && isMix(el)) {
+      return { hide: true, reason: "mix", indeterminate: false };
+    }
+
+    if (settings.hidePlayables && isPlayable(el)) {
+      return { hide: true, reason: "playable", indeterminate: false };
+    }
+
+    if (settings.hideMembersOnly && isMembersOnly(el)) {
+      return { hide: true, reason: "members-only", indeterminate: false };
+    }
+
+    if (settings.hideLowViews) {
+      const views = getViewCount(el);
+
+      if (isNaN(views)) {
+        return { hide: false, reason: "", indeterminate: true };
+      }
+
+      if (views < settings.viewThreshold) {
+        return {
+          hide: true,
+          reason: `low views (${views.toLocaleString()} < ${settings.viewThreshold.toLocaleString()})`,
+          indeterminate: false,
+        };
+      }
     }
 
     return { hide: false, reason: "", indeterminate: false };
@@ -227,33 +440,27 @@
   }
 
   // Selectors for all video element types we want to filter.
-  // Includes both ytd- (Chrome / legacy) and yt- (Firefox / new layout) elements.
   const VIDEO_SELECTORS = [
     "ytd-rich-item-renderer",     // Homepage grid items (Chrome)
     "ytd-video-renderer",         // Search results (Chrome)
     "ytd-compact-video-renderer", // Sidebar recommendations (Chrome)
     "ytd-grid-video-renderer",    // Grid views / channel pages (Chrome)
     "ytd-reel-item-renderer",     // Shorts on homepage (Chrome)
+    "ytd-radio-renderer",         // Mixes (Chrome)
     "yt-lockup-view-model",       // Video cards (Firefox / new layout)
   ].join(", ");
 
   // ytd- selectors used to detect whether a yt-lockup-view-model is nested
   // inside a Chrome-style container (so we skip it and let the parent handle it).
   const YTD_CONTAINER_SELECTORS =
-    "ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer";
+    "ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-grid-video-renderer, ytd-reel-item-renderer, ytd-radio-renderer";
 
   /**
    * Process a single video element: check and hide if necessary.
-   * Returns true if the element was definitively resolved (hidden or passed).
-   * Returns false if the element is indeterminate (no view data yet).
    */
   function processVideoElement(el) {
-    // Already filtered — skip
     if (el.hasAttribute(FILTERED_ATTR)) return true;
 
-    // On Chrome, yt-lockup-view-model is nested inside a ytd- container.
-    // Skip the inner element — the outer ytd- container will be processed
-    // and hidden instead, which avoids leaving an empty grid slot.
     if (
       el.tagName === "YT-LOCKUP-VIEW-MODEL" &&
       el.closest(YTD_CONTAINER_SELECTORS)
@@ -272,11 +479,9 @@
     }
 
     if (indeterminate) {
-      // Don't mark as resolved — we'll re-check on next scan
       return false;
     }
 
-    // Passed the filter — mark so we don't re-check expensively
     el.setAttribute(FILTERED_ATTR, "pass");
     return true;
   }
@@ -291,8 +496,6 @@
 
     for (const el of elements) {
       const status = el.getAttribute(FILTERED_ATTR);
-
-      // Already definitively resolved
       if (status === "1" || status === "pass" || status === "skip") continue;
 
       newCount++;
@@ -312,7 +515,6 @@
   // Autoplay intervention
   // ---------------------------------------------------------------------------
 
-  const COUNTDOWN_SECONDS = 10;
   const HISTORY_MAX = 20;
   const recentVideoIds = new Set(); // persists across SPA navs, resets on full reload
 
@@ -390,7 +592,6 @@
    * Get the channel name from a sidebar video element.
    */
   function getVideoChannel(el) {
-    // Chrome: ytd-channel-name
     const chromeChannel = el.querySelector(
       "ytd-channel-name #text, #channel-name #text, ytd-channel-name yt-formatted-string"
     );
@@ -398,8 +599,6 @@
       return chromeChannel.textContent.trim();
     }
 
-    // Firefox: yt-content-metadata-view-model spans
-    // Channel name is typically a span that isn't views/date/watching
     const metaModel = el.querySelector("yt-content-metadata-view-model");
     if (metaModel) {
       const spans = metaModel.querySelectorAll("span");
@@ -473,7 +672,6 @@
     const linkEl = container.querySelector("a.ytp-autonav-endscreen-link-container");
     if (linkEl) linkEl.href = info.url;
 
-    // Hide live stamp — replacement passed our filter so it's not live
     const liveStamp = container.querySelector(".ytp-autonav-live-stamp");
     if (liveStamp) liveStamp.style.display = "none";
 
@@ -488,7 +686,7 @@
   function startCountdown(info) {
     cancelCountdown();
 
-    let remaining = COUNTDOWN_SECONDS;
+    let remaining = settings.countdownSeconds;
 
     countdownOverlay = document.createElement("div");
     countdownOverlay.className = "ytf-countdown-overlay";
@@ -507,7 +705,6 @@
       player.appendChild(countdownOverlay);
     }
 
-    // Cancel button
     countdownOverlay.querySelector(".ytf-countdown-cancel")
       .addEventListener("click", function (e) {
         e.stopPropagation();
@@ -515,7 +712,6 @@
         cancelCountdown();
       });
 
-    // Cancel on player click outside overlay
     playerClickHandler = function (e) {
       if (countdownOverlay && countdownOverlay.contains(e.target)) return;
       log("Autoplay: countdown cancelled by player click");
@@ -523,7 +719,6 @@
     };
     if (player) player.addEventListener("click", playerClickHandler);
 
-    // Tick down every second
     const numberEl = countdownOverlay.querySelector(".ytf-countdown-number");
     countdownTimer = setInterval(function () {
       remaining--;
@@ -535,7 +730,7 @@
       }
     }, 1000);
 
-    log("Autoplay: countdown started (" + COUNTDOWN_SECONDS + "s)");
+    log("Autoplay: countdown started (" + settings.countdownSeconds + "s)");
   }
 
   /**
@@ -560,10 +755,13 @@
 
   /**
    * Check the autoplay up-next container and decide whether to skip.
-   * Returns true if a skip was initiated.
+   * All enabled filters (livestreams, low views, shorts, mixes, playables,
+   * members-only) apply to the autoplay overlay via the data-is-live
+   * attribute, view count, and the link href.
    */
   function checkAutoplayAndSkip() {
     if (autoplayHandled) return false;
+    if (!settings.autoplayIntercept) return false;
     if (!location.pathname.startsWith("/watch")) return false;
 
     const container = document.querySelector(
@@ -574,8 +772,6 @@
       return false;
     }
 
-    // Container exists but may not be visible yet (clientHeight 0)
-    // Check if it has meaningful content by looking for the title
     const titleEl = container.querySelector(
       ".ytp-autonav-endscreen-upnext-title"
     );
@@ -588,43 +784,83 @@
     let shouldSkip = false;
     let skipReason = "";
 
-    // Check 1: data-is-live attribute
-    if (container.getAttribute("data-is-live") === "true") {
-      shouldSkip = true;
-      skipReason = "livestream (data-is-live)";
-    }
-
-    // Check 2: .ytp-autonav-live-stamp visible
-    if (!shouldSkip) {
-      const liveStamp = container.querySelector(".ytp-autonav-live-stamp");
-      if (liveStamp && liveStamp.textContent.trim()) {
+    // Check: livestream
+    if (settings.hideLivestreams && !shouldSkip) {
+      if (container.getAttribute("data-is-live") === "true") {
         shouldSkip = true;
-        skipReason = "livestream (live stamp)";
+        skipReason = "livestream (data-is-live)";
+      }
+
+      if (!shouldSkip) {
+        const liveStamp = container.querySelector(".ytp-autonav-live-stamp");
+        if (liveStamp && liveStamp.textContent.trim()) {
+          shouldSkip = true;
+          skipReason = "livestream (live stamp)";
+        }
+      }
+
+      if (!shouldSkip) {
+        const viewDateEl = container.querySelector(".ytp-autonav-view-and-date");
+        if (viewDateEl && /\bwatching\b/i.test(viewDateEl.textContent)) {
+          shouldSkip = true;
+          skipReason = "livestream (watching)";
+        }
       }
     }
 
-    // Check 3: View/date text — "watching" means live, or parse view count
-    if (!shouldSkip) {
-      const viewDateEl = container.querySelector(
-        ".ytp-autonav-view-and-date"
-      );
+    // Check: low views
+    if (settings.hideLowViews && !shouldSkip) {
+      const viewDateEl = container.querySelector(".ytp-autonav-view-and-date");
       if (viewDateEl) {
         const viewText = viewDateEl.textContent.trim();
-        if (/\bwatching\b/i.test(viewText)) {
-          shouldSkip = true;
-          skipReason = "livestream (watching)";
-        } else {
+        if (!/\bwatching\b/i.test(viewText)) {
           const vs = extractViewString(viewText);
           if (vs) {
             const views = parseViewCount(vs);
-            if (!isNaN(views) && views < VIEW_THRESHOLD) {
+            if (!isNaN(views) && views < settings.viewThreshold) {
               shouldSkip = true;
-              skipReason = `low views (${views.toLocaleString()} < ${VIEW_THRESHOLD.toLocaleString()})`;
+              skipReason = "low views (" + views.toLocaleString() + " < " + settings.viewThreshold.toLocaleString() + ")";
             }
           }
         }
       }
     }
+
+    // Check: Shorts — autoplay link contains /shorts/
+    if (settings.hideShorts && !shouldSkip) {
+      const linkEl = container.querySelector("a.ytp-autonav-endscreen-link-container");
+      if (linkEl && linkEl.href && linkEl.href.includes("/shorts/")) {
+        shouldSkip = true;
+        skipReason = "short";
+      }
+    }
+
+    // Check: Mixes — autoplay link contains start_radio=1 or list=RD
+    if (settings.hideMixes && !shouldSkip) {
+      const linkEl = container.querySelector("a.ytp-autonav-endscreen-link-container");
+      if (linkEl && linkEl.href) {
+        if (linkEl.href.includes("start_radio=1") || /[?&]list=RD/.test(linkEl.href)) {
+          shouldSkip = true;
+          skipReason = "mix";
+        }
+      }
+      if (!shouldSkip && /^Mix\s*[-–]/.test(nextTitle)) {
+        shouldSkip = true;
+        skipReason = "mix";
+      }
+    }
+
+    // Check: Playables — autoplay link contains /playables/
+    if (settings.hidePlayables && !shouldSkip) {
+      const linkEl = container.querySelector("a.ytp-autonav-endscreen-link-container");
+      if (linkEl && linkEl.href && linkEl.href.includes("/playables/")) {
+        shouldSkip = true;
+        skipReason = "playable";
+      }
+    }
+
+    // Check: Members-only — not easily detectable in autoplay overlay,
+    // but the sidebar alternative search already filters these out.
 
     if (!shouldSkip) {
       log("Autoplay: up-next video is OK:", nextTitle);
@@ -633,7 +869,6 @@
 
     log("Autoplay: skipping up-next:", nextTitle, "—", skipReason);
 
-    // Find a valid alternative from the sidebar recommendations
     const alternative = findSidebarAlternative();
     if (alternative) {
       log("Autoplay: replacement:", alternative.title);
@@ -651,7 +886,6 @@
   /**
    * Find the first sidebar recommendation that passed filtering
    * and hasn't been recently played.
-   * Returns { anchor, title, channel, metaText, videoId, url } or null.
    */
   function findSidebarAlternative() {
     const secondary =
@@ -706,7 +940,6 @@
 
   /**
    * Navigate to a video via its anchor element.
-   * Prefers .click() for SPA transition, falls back to location change.
    */
   function navigateToVideo(anchor) {
     restoreYouTubeAutoplay();
@@ -714,9 +947,7 @@
     try {
       anchor.click();
       log("Autoplay: clicked sidebar link for SPA navigation");
-      // Verify navigation happened after a short delay
       setTimeout(() => {
-        // If we're still on the same page, fall back to location change
         if (location.href !== url && !location.href.includes(new URL(url).searchParams.get("v"))) {
           log("Autoplay: click didn't navigate, falling back to location.href");
           window.location.href = url;
@@ -743,10 +974,8 @@
     const video = document.querySelector("#movie_player video");
     if (!video) return false;
 
-    // Already attached to this element
     if (video === videoElement && videoEndedBound) return true;
 
-    // Detach from previous element if any
     detachVideoEndedListener();
 
     videoElement = video;
@@ -770,18 +999,17 @@
 
   /**
    * Poll for the <video> element (YouTube loads it dynamically).
-   * Polls every 1s for up to 30 seconds, then stops.
    */
   function startVideoPolling() {
     stopVideoPolling();
 
+    if (!settings.autoplayIntercept) return;
     if (!location.pathname.startsWith("/watch")) return;
 
     let elapsed = 0;
     const POLL_INTERVAL = 1000;
     const MAX_POLL_TIME = 30000;
 
-    // Try immediately first
     if (attachVideoEndedListener()) {
       setupAutoplayContainerObserver();
       return;
@@ -815,18 +1043,17 @@
 
   /**
    * Set up a MutationObserver on the autoplay up-next container as a backup.
-   * Watches for attribute changes (data-is-live) and visibility changes.
    */
   function setupAutoplayContainerObserver() {
     teardownAutoplayContainerObserver();
 
+    if (!settings.autoplayIntercept) return;
     if (!location.pathname.startsWith("/watch")) return;
 
     const container = document.querySelector(
       ".ytp-autonav-endscreen-upnext-container"
     );
     if (!container) {
-      // Container may not exist yet — try again shortly
       setTimeout(setupAutoplayContainerObserver, 2000);
       return;
     }
@@ -835,21 +1062,18 @@
       if (isUpdatingEndCard) return;
 
       for (const mutation of mutations) {
-        // Trigger on attribute changes (data-is-live being set, style changes)
         if (
           mutation.type === "attributes" &&
           (mutation.attributeName === "data-is-live" ||
             mutation.attributeName === "style" ||
             mutation.attributeName === "class")
         ) {
-          // Check if container is now visible (clientHeight > 0)
           if (container.clientHeight > 0) {
             log("Autoplay: container became visible (attribute change)");
             checkAutoplayAndSkip();
             return;
           }
         }
-        // Also trigger on child changes (content being populated)
         if (mutation.type === "childList" && container.clientHeight > 0) {
           log("Autoplay: container content changed while visible");
           checkAutoplayAndSkip();
@@ -896,23 +1120,20 @@
   function onNavigate() {
     log("Navigation detected — rescanning");
 
-    // Record the video we just watched to prevent loops
     recordCurrentVideo();
 
-    // Clear all filter marks so we re-evaluate on the new page
     document.querySelectorAll(`[${FILTERED_ATTR}]`).forEach((el) => {
       el.removeAttribute(FILTERED_ATTR);
       el.classList.remove("ytf-hidden");
     });
 
-    // Clean up all autoplay state — YouTube creates new video elements on nav
     cleanupAutoplay();
 
-    // Re-scan after a brief delay to let YouTube render new content
     setTimeout(() => {
       scanAndFilter();
-      // Start polling for the new video element and set up autoplay interception
-      startVideoPolling();
+      if (settings.autoplayIntercept) {
+        startVideoPolling();
+      }
     }, 500);
   }
 
@@ -933,7 +1154,6 @@
   }
 
   const observer = new MutationObserver(() => {
-    // Fire on ANY mutation — text changes (metadata loading) matter too
     debouncedScan();
   });
 
@@ -943,7 +1163,6 @@
 
   function startPeriodicRescan() {
     setInterval(() => {
-      // Only re-scan if there are unresolved elements on the page
       const unresolved = document.querySelectorAll(
         VIDEO_SELECTORS.split(", ")
           .map((s) => `${s}:not([${FILTERED_ATTR}])`)
@@ -960,28 +1179,29 @@
   // ---------------------------------------------------------------------------
 
   function init() {
-    log(
-      "Initializing YouTube Feed Filter (threshold:",
-      VIEW_THRESHOLD,
-      "views)"
-    );
+    loadSettings().then(() => {
+      log(
+        "Initializing YouTube Feed Filter (threshold:",
+        settings.viewThreshold,
+        "views)"
+      );
 
-    scanAndFilter();
+      scanAndFilter();
 
-    // Start polling for <video> element and set up autoplay interception
-    startVideoPolling();
+      if (settings.autoplayIntercept) {
+        startVideoPolling();
+      }
 
-    // Observe body for all DOM changes (child additions, text, attributes)
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      characterData: true,
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+
+      startPeriodicRescan();
+
+      log("MutationObserver active, periodic rescan every", RESCAN_INTERVAL_MS, "ms");
     });
-
-    // Periodic fallback for content that loads without triggering mutations
-    startPeriodicRescan();
-
-    log("MutationObserver active, periodic rescan every", RESCAN_INTERVAL_MS, "ms");
   }
 
   if (document.readyState === "loading") {

@@ -1,0 +1,128 @@
+/* YouTube Feed Filter — Popup Styles */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 320px;
+  background: #0f0f0f;
+  color: #f1f1f1;
+  font-family: "YouTube Noto", Roboto, Arial, sans-serif;
+  font-size: 13px;
+}
+
+.ytf-popup {
+  padding: 16px;
+}
+
+.ytf-header {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #272727;
+}
+
+.ytf-section {
+  margin-bottom: 16px;
+}
+
+.ytf-section:last-child {
+  margin-bottom: 0;
+}
+
+.ytf-section-title {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #aaa;
+  margin-bottom: 10px;
+}
+
+.ytf-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  cursor: pointer;
+  gap: 8px;
+}
+
+.ytf-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.ytf-row-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Toggle switch */
+.ytf-toggle {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 36px;
+  height: 20px;
+  background: #717171;
+  border-radius: 10px;
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+
+.ytf-toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.ytf-toggle:checked {
+  background: #f00;
+}
+
+.ytf-toggle:checked::after {
+  transform: translateX(16px);
+}
+
+/* Number input */
+.ytf-number {
+  width: 72px;
+  padding: 4px 6px;
+  background: #272727;
+  border: 1px solid #3f3f3f;
+  border-radius: 4px;
+  color: #f1f1f1;
+  font-size: 13px;
+  font-family: inherit;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.ytf-number:focus {
+  outline: none;
+  border-color: #f00;
+}
+
+/* Hide spin buttons for number inputs */
+.ytf-number::-webkit-inner-spin-button,
+.ytf-number::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.ytf-number[type="number"] {
+  -moz-appearance: textfield;
+}
