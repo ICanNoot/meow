@@ -509,6 +509,61 @@
         `Scanned ${newCount} unresolved elements, resolved ${resolvedCount}`
       );
     }
+
+    scanAndFilterShelves();
+  }
+
+  // Selectors for shelf / section containers on the homepage.
+  // These wrap a heading + multiple items + "Show more" button.
+  const SHELF_SELECTORS = [
+    "ytd-rich-shelf-renderer",     // Shelf sections (Chrome)
+    "ytd-reel-shelf-renderer",     // Shorts shelf (Chrome)
+    "ytd-rich-section-renderer",   // Section wrappers (Chrome)
+    "ytd-shelf-renderer",          // Legacy shelf (Chrome)
+  ].join(", ");
+
+  // Maps a heading keyword (uppercase) to { settingKey, reason }
+  const SHELF_FILTERS = [
+    { pattern: /\bplayable/i,  settingKey: "hidePlayables", reason: "playables shelf" },
+    { pattern: /\bshorts\b/i,  settingKey: "hideShorts",    reason: "shorts shelf" },
+  ];
+
+  /**
+   * Scan for shelf/section containers and hide entire shelves whose
+   * heading matches a filtered category (e.g. "YouTube Playables").
+   */
+  function scanAndFilterShelves() {
+    const shelves = document.querySelectorAll(SHELF_SELECTORS);
+
+    for (const shelf of shelves) {
+      if (shelf.hasAttribute(FILTERED_ATTR)) continue;
+
+      // Find the heading text inside the shelf
+      const heading = shelf.querySelector(
+        "#title, #title-text, h2, " +
+        "yt-dynamic-text-view-model, " +
+        "span.style-scope.ytd-rich-shelf-renderer"
+      );
+      if (!heading) continue;
+
+      const headingText = heading.textContent.trim();
+      if (!headingText) continue;
+
+      for (const filter of SHELF_FILTERS) {
+        if (!settings[filter.settingKey]) continue;
+        if (filter.pattern.test(headingText)) {
+          shelf.setAttribute(FILTERED_ATTR, "1");
+          shelf.classList.add("ytf-hidden");
+          log("Hiding shelf:", headingText, "—", filter.reason);
+          break;
+        }
+      }
+
+      // Mark as checked even if not hidden, to avoid re-processing
+      if (!shelf.hasAttribute(FILTERED_ATTR)) {
+        shelf.setAttribute(FILTERED_ATTR, "pass");
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
