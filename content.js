@@ -451,6 +451,7 @@
     "ytd-reel-item-renderer",     // Shorts on homepage (Chrome)
     "ytd-radio-renderer",         // Mixes (Chrome)
     "yt-lockup-view-model",       // Video cards (Firefox / new layout)
+    "ytd-reel-video-renderer",    // Shorts reel items (Chrome search)
   ].join(", ");
 
   // ytd- selectors used to detect whether a yt-lockup-view-model is nested
@@ -529,6 +530,8 @@
     "yt-reel-shelf-renderer",      // Shorts shelf (Firefox)
     "yt-rich-shelf-renderer",      // Rich shelf (Firefox)
     "yt-rich-section-renderer",    // Section wrappers (Firefox)
+    "ytd-item-section-renderer",   // Search result sections (Chrome)
+    "yt-item-section-renderer",    // Search result sections (Firefox)
   ].join(", ");
 
   // Maps a heading pattern to { settingKey, reason }
@@ -735,25 +738,53 @@
         el = el.parentElement;
       }
 
-      // Firefox fallback: if no named parent was found, hide immediate
-      // ancestor divs that exist solely to wrap the chip bar.
+      // Firefox fallback: walk up from the chip bar to find any ancestor
+      // that has a background color, sticky positioning, or only wraps chips.
+      // This catches the dark background bar that YouTube renders above the feed.
       if (!hidParent) {
         let wrapper = bar.parentElement;
         let depth = 0;
-        while (wrapper && depth < 3) {
+        while (wrapper && wrapper !== document.body && depth < 6) {
           const tag = wrapper.tagName.toLowerCase();
-          if (tag !== "div") break;
-          // Stop if this div has many other children (it's a layout container)
-          const significantChildren = wrapper.querySelectorAll(
-            ":scope > :not(style):not(script):not([" + FILTERED_ATTR + "])"
-          );
-          if (significantChildren.length > 1) break;
-          if (!wrapper.hasAttribute(FILTERED_ATTR)) {
-            wrapper.setAttribute(FILTERED_ATTR, "1");
-            wrapper.classList.add("ytf-hidden");
-            log("Hiding topic chips wrapper div");
-            hidParent = true;
+          // Stop at page-level boundaries
+          if (tag === "ytd-browse" || tag === "yt-browse" ||
+              tag === "ytd-page-manager" || tag === "yt-page-manager" ||
+              tag === "ytd-app") break;
+
+          // Check if this element has a visible background or sticky position
+          const style = window.getComputedStyle(wrapper);
+          const bg = style.backgroundColor || "";
+          const pos = style.position || "";
+          const hasVisibleBg = bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent";
+          const isSticky = pos === "sticky" || pos === "fixed";
+
+          if (hasVisibleBg || isSticky) {
+            if (!wrapper.hasAttribute(FILTERED_ATTR)) {
+              wrapper.setAttribute(FILTERED_ATTR, "1");
+              wrapper.classList.add("ytf-hidden");
+              log("Hiding topic chips background container:", tag,
+                  wrapper.id ? "#" + wrapper.id : "",
+                  hasVisibleBg ? "(bg: " + bg + ")" : "(sticky)");
+              hidParent = true;
+            }
+            break;
           }
+
+          // Also hide wrapper divs that have no significant content besides the chip bar
+          if (tag === "div") {
+            const significantChildren = wrapper.querySelectorAll(
+              ":scope > :not(style):not(script):not([" + FILTERED_ATTR + "])"
+            );
+            if (significantChildren.length <= 1) {
+              if (!wrapper.hasAttribute(FILTERED_ATTR)) {
+                wrapper.setAttribute(FILTERED_ATTR, "1");
+                wrapper.classList.add("ytf-hidden");
+                log("Hiding topic chips wrapper div");
+                hidParent = true;
+              }
+            }
+          }
+
           wrapper = wrapper.parentElement;
           depth++;
         }
@@ -805,14 +836,20 @@
         "ytd-reel-shelf-renderer,\n" +
         "yt-reel-shelf-renderer {\n" +
         "  display: none !important;\n}\n" +
-        "/* Shorts in search results — Firefox uses yt-lockup with /shorts/ links */\n" +
-        'yt-lockup-view-model:has(a[href*="/shorts/"]) {\n' +
+        "/* Shorts in search results — individual items */\n" +
+        'yt-lockup-view-model:has(a[href*="/shorts/"]),\n' +
+        'ytd-video-renderer:has(a[href*="/shorts/"]),\n' +
+        'ytd-reel-video-renderer {\n' +
+        "  display: none !important;\n}\n" +
+        "/* Shorts sections in search — section wrappers containing only shorts */\n" +
+        'ytd-item-section-renderer:has(ytd-reel-shelf-renderer),\n' +
+        'yt-item-section-renderer:has(yt-reel-shelf-renderer) {\n' +
         "  display: none !important;\n}\n";
     }
 
     if (settings.hideTopicChips) {
       css +=
-        "/* Topic chip bars */\n" +
+        "/* Topic chip bars and all ancestor containers */\n" +
         "ytd-feed-filter-chip-bar-renderer,\n" +
         "yt-chip-cloud-renderer,\n" +
         "yt-chip-cloud-view-model {\n" +
@@ -822,17 +859,22 @@
         "ytd-rich-grid-renderer #header,\n" +
         "yt-rich-grid-renderer > #header,\n" +
         "yt-rich-grid-renderer #header,\n" +
-        // Firefox: hide any #chips-wrapper, #chip-bar, or container with chip bars
         "#chips-wrapper,\n" +
         "#chip-bar,\n" +
+        // Any #header that contains chip bar elements
         "#header:has(yt-chip-cloud-renderer),\n" +
         "#header:has(yt-chip-cloud-view-model),\n" +
         "#header:has(ytd-feed-filter-chip-bar-renderer),\n" +
-        // Sticky header container that holds the chip bar
-        "[class*='chip-bar'],\n" +
-        // Broadest fallback: any element whose only visible purpose is chips
-        "div:has(> yt-chip-cloud-renderer):not([id='content']):not(ytd-browse):not(yt-page-navigation-progress),\n" +
-        "div:has(> yt-chip-cloud-view-model):not([id='content']):not(ytd-browse):not(yt-page-navigation-progress) {\n" +
+        "[class*='chip-bar'] {\n" +
+        "  display: none !important;\n}\n" +
+        // Walk up through any wrapper divs that contain chip bars
+        // Uses multiple levels of :has() to catch grandparent containers
+        "div:has(> yt-chip-cloud-renderer):not(ytd-browse):not(yt-browse),\n" +
+        "div:has(> yt-chip-cloud-view-model):not(ytd-browse):not(yt-browse),\n" +
+        "div:has(> ytd-feed-filter-chip-bar-renderer):not(ytd-browse):not(yt-browse),\n" +
+        "div:has(> div > yt-chip-cloud-renderer):not(ytd-browse):not(yt-browse):not(#content),\n" +
+        "div:has(> div > yt-chip-cloud-view-model):not(ytd-browse):not(yt-browse):not(#content),\n" +
+        "div:has(> div > ytd-feed-filter-chip-bar-renderer):not(ytd-browse):not(yt-browse):not(#content) {\n" +
         "  display: none !important;\n}\n";
     }
 
