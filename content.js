@@ -525,6 +525,10 @@
     "ytd-reel-shelf-renderer",     // Shorts shelf (Chrome)
     "ytd-rich-section-renderer",   // Section wrappers (Chrome)
     "ytd-shelf-renderer",          // Legacy shelf (Chrome)
+    "yt-shelf-renderer",           // Shelf sections (Firefox)
+    "yt-reel-shelf-renderer",      // Shorts shelf (Firefox)
+    "yt-rich-shelf-renderer",      // Rich shelf (Firefox)
+    "yt-rich-section-renderer",    // Section wrappers (Firefox)
   ].join(", ");
 
   // Maps a heading pattern to { settingKey, reason }
@@ -548,7 +552,8 @@
       const heading = shelf.querySelector(
         "#title, #title-text, h2, " +
         "yt-dynamic-text-view-model, " +
-        "span.style-scope.ytd-rich-shelf-renderer"
+        "span.style-scope.ytd-rich-shelf-renderer, " +
+        ".shelf-title, [class*='title']"
       );
       if (!heading) continue;
 
@@ -562,6 +567,23 @@
           shelf.classList.add("ytf-hidden");
           log("Hiding shelf:", headingText, "—", filter.reason);
           break;
+        }
+      }
+
+      // If still not matched by heading, check if this is a Shorts shelf
+      // by looking for /shorts/ links inside it (Firefox may lack heading text).
+      if (!shelf.hasAttribute(FILTERED_ATTR) && settings.hideShorts) {
+        const shortsLinks = shelf.querySelectorAll('a[href*="/shorts/"]');
+        if (shortsLinks.length > 0) {
+          const nonShortsLinks = shelf.querySelectorAll(
+            'a[href*="/watch?"], a[href*="/playlist?"]'
+          );
+          // If most links are shorts, treat this as a shorts shelf
+          if (nonShortsLinks.length === 0 || shortsLinks.length > nonShortsLinks.length) {
+            shelf.setAttribute(FILTERED_ATTR, "1");
+            shelf.classList.add("ytf-hidden");
+            log("Hiding shelf: contains Shorts links");
+          }
         }
       }
 
@@ -615,11 +637,37 @@
 
   function hideSidebarEntry(el, reason) {
     const entry = el.closest(GUIDE_ENTRY_SELECTORS);
-    const target = entry || el.parentElement;
+    if (entry) {
+      if (entry.hasAttribute(FILTERED_ATTR)) return;
+      entry.setAttribute(FILTERED_ATTR, "1");
+      entry.classList.add("ytf-hidden");
+      log("Hiding sidebar entry:", reason);
+      return;
+    }
+
+    // Firefox fallback: walk up from the <a> to find the closest <li>,
+    // role="listitem", or any element that looks like a nav entry container.
+    let target = el;
+    let walked = 0;
+    while (target.parentElement && walked < 5) {
+      target = target.parentElement;
+      walked++;
+      const tag = target.tagName.toLowerCase();
+      const role = target.getAttribute("role") || "";
+      if (
+        tag === "li" ||
+        role === "listitem" ||
+        role === "tab" ||
+        tag.includes("entry") ||
+        tag.includes("guide")
+      ) {
+        break;
+      }
+    }
     if (!target || target.hasAttribute(FILTERED_ATTR)) return;
     target.setAttribute(FILTERED_ATTR, "1");
     target.classList.add("ytf-hidden");
-    log("Hiding sidebar entry:", reason);
+    log("Hiding sidebar entry:", reason, "(Firefox fallback)");
   }
 
   /**
@@ -640,22 +688,35 @@
       bar.classList.add("ytf-hidden");
 
       // Walk UP from the chip bar to find and hide the parent container
-      // that provides the background/padding (typically a #header div
-      // or a #chip-bar wrapper inside the grid renderer).
+      // that provides the background/padding (typically a #header div,
+      // #chip-bar, or #chips-wrapper inside the grid renderer).
       let el = bar.parentElement;
       let hidParent = false;
       while (el && el !== document.body) {
         const tag = el.tagName.toLowerCase();
         // Stop at page-level boundaries
-        if (tag === "ytd-browse" || tag === "ytd-page-manager" ||
+        if (tag === "ytd-browse" || tag === "yt-browse" ||
+            tag === "ytd-page-manager" || tag === "yt-page-manager" ||
             tag === "ytd-app" || tag === "yt-page-navigation-progress") break;
 
-        // Hide any container with id="header" or id="chip-bar"
-        if (el.id === "header" || el.id === "chip-bar") {
+        // Hide any container with an id that looks like a chip/header wrapper
+        if (el.id === "header" || el.id === "chip-bar" ||
+            el.id === "chips-wrapper" || el.id === "chips-content") {
           if (!el.hasAttribute(FILTERED_ATTR)) {
             el.setAttribute(FILTERED_ATTR, "1");
             el.classList.add("ytf-hidden");
             log("Hiding topic chips container:", tag + "#" + el.id);
+            hidParent = true;
+          }
+        }
+
+        // Hide containers whose className references chip-bar
+        if (!hidParent && el.className && typeof el.className === "string" &&
+            el.className.includes("chip-bar")) {
+          if (!el.hasAttribute(FILTERED_ATTR)) {
+            el.setAttribute(FILTERED_ATTR, "1");
+            el.classList.add("ytf-hidden");
+            log("Hiding topic chips container:", tag + "." + el.className);
             hidParent = true;
           }
         }
@@ -672,6 +733,30 @@
         }
 
         el = el.parentElement;
+      }
+
+      // Firefox fallback: if no named parent was found, hide immediate
+      // ancestor divs that exist solely to wrap the chip bar.
+      if (!hidParent) {
+        let wrapper = bar.parentElement;
+        let depth = 0;
+        while (wrapper && depth < 3) {
+          const tag = wrapper.tagName.toLowerCase();
+          if (tag !== "div") break;
+          // Stop if this div has many other children (it's a layout container)
+          const significantChildren = wrapper.querySelectorAll(
+            ":scope > :not(style):not(script):not([" + FILTERED_ATTR + "])"
+          );
+          if (significantChildren.length > 1) break;
+          if (!wrapper.hasAttribute(FILTERED_ATTR)) {
+            wrapper.setAttribute(FILTERED_ATTR, "1");
+            wrapper.classList.add("ytf-hidden");
+            log("Hiding topic chips wrapper div");
+            hidParent = true;
+          }
+          wrapper = wrapper.parentElement;
+          depth++;
+        }
       }
 
       if (!hidParent) {
@@ -709,10 +794,19 @@
         'yt-guide-entry-renderer:has(a[href="/shorts"]),\n' +
         'yt-guide-entry-renderer:has(a[title="Shorts"]),\n' +
         'yt-mini-guide-entry-renderer:has(a[href="/shorts"]),\n' +
-        'yt-mini-guide-entry-renderer:has(a[title="Shorts"]) {\n' +
+        'yt-mini-guide-entry-renderer:has(a[title="Shorts"]),\n' +
+        // Firefox sidebar: walk up to <li> or role=listitem parent of shorts link
+        'li:has(> a[href="/shorts"]),\n' +
+        'li:has(> a[title="Shorts"]),\n' +
+        '[role="listitem"]:has(a[href="/shorts"]),\n' +
+        '[role="tab"]:has(a[href="/shorts"]) {\n' +
         "  display: none !important;\n}\n" +
         "/* Shorts shelves in search results and homepage */\n" +
-        "ytd-reel-shelf-renderer {\n" +
+        "ytd-reel-shelf-renderer,\n" +
+        "yt-reel-shelf-renderer {\n" +
+        "  display: none !important;\n}\n" +
+        "/* Shorts in search results — Firefox uses yt-lockup with /shorts/ links */\n" +
+        'yt-lockup-view-model:has(a[href*="/shorts/"]) {\n' +
         "  display: none !important;\n}\n";
     }
 
@@ -727,7 +821,18 @@
         "ytd-rich-grid-renderer > #header,\n" +
         "ytd-rich-grid-renderer #header,\n" +
         "yt-rich-grid-renderer > #header,\n" +
-        "yt-rich-grid-renderer #header {\n" +
+        "yt-rich-grid-renderer #header,\n" +
+        // Firefox: hide any #chips-wrapper, #chip-bar, or container with chip bars
+        "#chips-wrapper,\n" +
+        "#chip-bar,\n" +
+        "#header:has(yt-chip-cloud-renderer),\n" +
+        "#header:has(yt-chip-cloud-view-model),\n" +
+        "#header:has(ytd-feed-filter-chip-bar-renderer),\n" +
+        // Sticky header container that holds the chip bar
+        "[class*='chip-bar'],\n" +
+        // Broadest fallback: any element whose only visible purpose is chips
+        "div:has(> yt-chip-cloud-renderer):not([id='content']):not(ytd-browse):not(yt-page-navigation-progress),\n" +
+        "div:has(> yt-chip-cloud-view-model):not([id='content']):not(ytd-browse):not(yt-page-navigation-progress) {\n" +
         "  display: none !important;\n}\n";
     }
 

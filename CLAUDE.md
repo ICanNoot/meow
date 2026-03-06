@@ -84,9 +84,7 @@ Manifest V3 Firefox extension that filters livestreams, low-view videos, Shorts,
 - On navigation: records current video ID, clears all filter marks, cleans up autoplay state, rescans after 500ms delay
 
 ## Known issues / incomplete items
-- **Shorts sidebar button**: `filterShortsNav()` targets `ytd-guide-entry-renderer` and `ytd-mini-guide-entry-renderer` which may not exist on Firefox. Needs to find the `a[href="/shorts"]` element and walk up to the correct parent. May need CSS fallback approach.
-- **Shorts in search results**: May not be caught on Firefox if the shelf elements differ from Chrome.
-- **Topic chips bar**: The chips themselves are hidden but the background container may still be visible, leaving empty space at the top of the page. Need to target the outermost wrapper element.
+(none currently tracked)
 
 ## Files
 - `content.js` — main filtering logic (1313 lines), autoplay interception, settings listener, shelf/nav/chip filtering
