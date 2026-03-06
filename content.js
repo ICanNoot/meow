@@ -449,9 +449,9 @@
     "ytd-compact-video-renderer", // Sidebar recommendations (Chrome)
     "ytd-grid-video-renderer",    // Grid views / channel pages (Chrome)
     "ytd-reel-item-renderer",     // Shorts on homepage (Chrome)
+    "ytd-reel-video-renderer",    // Shorts reel items (Chrome search)
     "ytd-radio-renderer",         // Mixes (Chrome)
     "yt-lockup-view-model",       // Video cards (Firefox / new layout)
-    "ytd-reel-video-renderer",    // Shorts reel items (Chrome search)
   ].join(", ");
 
   // ytd- selectors used to detect whether a yt-lockup-view-model is nested
@@ -526,11 +526,13 @@
     "ytd-reel-shelf-renderer",     // Shorts shelf (Chrome)
     "ytd-rich-section-renderer",   // Section wrappers (Chrome)
     "ytd-shelf-renderer",          // Legacy shelf (Chrome)
+    "ytd-item-section-renderer",   // Search result sections (Chrome)
+    "ytd-rich-grid-group",         // Grid group container (Chrome)
+    "grid-shelf-view-model",       // Extendable shorts shelf on search (Chrome)
     "yt-shelf-renderer",           // Shelf sections (Firefox)
     "yt-reel-shelf-renderer",      // Shorts shelf (Firefox)
     "yt-rich-shelf-renderer",      // Rich shelf (Firefox)
     "yt-rich-section-renderer",    // Section wrappers (Firefox)
-    "ytd-item-section-renderer",   // Search result sections (Chrome)
     "yt-item-section-renderer",    // Search result sections (Firefox)
   ].join(", ");
 
@@ -634,6 +636,38 @@
         entry.setAttribute(FILTERED_ATTR, "1");
         entry.classList.add("ytf-hidden");
         log("Hiding sidebar entry: Shorts (text)");
+      }
+    }
+
+    // Strategy 4: Desktop guide — Shorts tab may have no href attribute at all.
+    // The reference extension (hide-youtube-shorts) uses this pattern.
+    const guideWrapper = document.querySelector("div#guide-wrapper");
+    if (guideWrapper) {
+      const noHrefLinks = guideWrapper.querySelectorAll(
+        "ytd-guide-entry-renderer > a:not([href])"
+      );
+      for (const link of noHrefLinks) {
+        const entry = link.closest("ytd-guide-entry-renderer");
+        if (entry && !entry.hasAttribute(FILTERED_ATTR) &&
+            /^\s*Shorts\s*$/i.test(entry.textContent)) {
+          entry.setAttribute(FILTERED_ATTR, "1");
+          entry.classList.add("ytf-hidden");
+          log("Hiding sidebar entry: Shorts (no-href guide entry)");
+        }
+      }
+    }
+
+    // Strategy 5: Mini guide — direct href match for /shorts/
+    const miniGuideShorts = document.querySelectorAll(
+      "ytd-mini-guide-entry-renderer > a[href='/shorts/'], " +
+      "ytd-mini-guide-entry-renderer > a[href='/shorts']"
+    );
+    for (const link of miniGuideShorts) {
+      const entry = link.closest("ytd-mini-guide-entry-renderer");
+      if (entry && !entry.hasAttribute(FILTERED_ATTR)) {
+        entry.setAttribute(FILTERED_ATTR, "1");
+        entry.classList.add("ytf-hidden");
+        log("Hiding sidebar entry: Shorts (mini guide)");
       }
     }
   }
@@ -815,9 +849,11 @@
       css +=
         "/* Shorts sidebar entries — multiple strategies for Firefox/Chrome */\n" +
         'ytd-guide-entry-renderer:has(a[href="/shorts"]),\n' +
+        'ytd-guide-entry-renderer:has(a[href="/shorts/"]),\n' +
         'ytd-guide-entry-renderer:has(a[href*="youtube.com/shorts"]),\n' +
         'ytd-guide-entry-renderer:has(a[title="Shorts"]),\n' +
         'ytd-mini-guide-entry-renderer:has(a[href="/shorts"]),\n' +
+        'ytd-mini-guide-entry-renderer:has(a[href="/shorts/"]),\n' +
         'ytd-mini-guide-entry-renderer:has(a[href*="youtube.com/shorts"]),\n' +
         'ytd-mini-guide-entry-renderer:has(a[title="Shorts"]),\n' +
         'ytd-guide-collapsible-entry-renderer:has(a[href="/shorts"]),\n' +
@@ -828,22 +864,36 @@
         'yt-mini-guide-entry-renderer:has(a[title="Shorts"]),\n' +
         // Firefox sidebar: walk up to <li> or role=listitem parent of shorts link
         'li:has(> a[href="/shorts"]),\n' +
+        'li:has(> a[href="/shorts/"]),\n' +
         'li:has(> a[title="Shorts"]),\n' +
         '[role="listitem"]:has(a[href="/shorts"]),\n' +
         '[role="tab"]:has(a[href="/shorts"]) {\n' +
         "  display: none !important;\n}\n" +
+
         "/* Shorts shelves in search results and homepage */\n" +
         "ytd-reel-shelf-renderer,\n" +
-        "yt-reel-shelf-renderer {\n" +
+        "yt-reel-shelf-renderer,\n" +
+        // Extendable shorts shelf on search page
+        "grid-shelf-view-model,\n" +
+        // Grid group containers that hold shorts
+        'ytd-rich-grid-group:has([href*="/shorts/"]),\n' +
+        // Section wrappers containing rich-shelf with shorts
+        'ytd-rich-section-renderer:has(ytd-rich-shelf-renderer [href*="/shorts/"]) {\n' +
         "  display: none !important;\n}\n" +
-        "/* Shorts in search results — individual items */\n" +
+
+        "/* Shorts in search results — individual items on any page */\n" +
         'yt-lockup-view-model:has(a[href*="/shorts/"]),\n' +
         'ytd-video-renderer:has(a[href*="/shorts/"]),\n' +
-        'ytd-reel-video-renderer {\n' +
+        'ytd-rich-item-renderer:has(a[href*="/shorts/"]),\n' +
+        'ytd-grid-video-renderer:has(a[href*="/shorts/"]),\n' +
+        "ytd-reel-item-renderer,\n" +
+        "ytd-reel-video-renderer {\n" +
         "  display: none !important;\n}\n" +
+
         "/* Shorts sections in search — section wrappers containing only shorts */\n" +
-        'ytd-item-section-renderer:has(ytd-reel-shelf-renderer),\n' +
-        'yt-item-section-renderer:has(yt-reel-shelf-renderer) {\n' +
+        "ytd-item-section-renderer:has(ytd-reel-shelf-renderer),\n" +
+        "yt-item-section-renderer:has(yt-reel-shelf-renderer),\n" +
+        "ytd-item-section-renderer:has(grid-shelf-view-model) {\n" +
         "  display: none !important;\n}\n";
     }
 
